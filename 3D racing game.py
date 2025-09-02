@@ -89,7 +89,7 @@ class Vehicle:
             self.weight = 0.6
             self.size = [2.0, 1.2, 4.0]
         else:  # car
-            self.max_speed = 3.5  # Reduced from 12.0 - powerful but controlled
+            self.max_speed = 2.8  # Reduced from 12.0 - powerful but controlled
             self.acceleration = 0.20  # Strong but not instant
             self.turn_speed = 3.0  # Much more realistic turning - was 3.5
             self.brake_power = 1.2  # Very strong braking for heavy vehicle
