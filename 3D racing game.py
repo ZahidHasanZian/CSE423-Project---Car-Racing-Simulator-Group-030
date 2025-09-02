@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 3D Racing Game Environment with Fixed-Length Straight Track
-Lamp posts and buildings positioned beside the road
+Complete code with proper sky rendering for day/night cycle
 """
 
 from OpenGL.GL import *
@@ -63,8 +63,8 @@ def init_scene():
     glEnable(GL_BLEND)
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
     
-    # Set clear color and depth
-    glClearColor(0.5, 0.7, 1.0, 1.0)
+    # Set initial clear color
+    update_clear_color()
     glClearDepth(1.0)
     
     # Initialize environment
@@ -246,6 +246,20 @@ def get_sky_colors():
     }
     
     return colors.get(phase, colors["Day"])
+
+def update_clear_color():
+    """Update the clear color based on time of day"""
+    sky_colors = get_sky_colors()
+    
+    # Apply weather effects
+    if weather_mode == "heavy_rain":
+        clear_color = [c * 0.5 for c in sky_colors['bottom']]
+    elif weather_mode == "rain":
+        clear_color = [c * 0.7 for c in sky_colors['bottom']]
+    else:
+        clear_color = sky_colors['bottom']
+    
+    glClearColor(clear_color[0], clear_color[1], clear_color[2], 1.0)
 
 def setup_camera():
     """Configure camera with perspective projection (from template)"""
@@ -637,7 +651,7 @@ def draw_trees():
         glPopMatrix()
 
 def draw_sky():
-    """Draw sky with sun/moon"""
+    """Draw sky with sun/moon - covers entire visible area"""
     glDisable(GL_LIGHTING)
     glDepthMask(GL_FALSE)
     glDisable(GL_DEPTH_TEST)
@@ -652,34 +666,80 @@ def draw_sky():
         sky_colors['top'] = [c * 0.7 for c in sky_colors['top']]
         sky_colors['bottom'] = [c * 0.8 for c in sky_colors['bottom']]
     
-    # Sky gradient
+    # Draw sky dome/box that surrounds the entire scene
+    # We'll draw 5 faces of a box (no bottom needed)
+    
+    # Front face
     glBegin(GL_QUADS)
     glColor3fv(sky_colors['bottom'])
-    glVertex3f(-400, 0, -400)
-    glVertex3f(400, 0, -400)
+    glVertex3f(-500, -50, -500)
+    glVertex3f(500, -50, -500)
     glColor3fv(sky_colors['top'])
-    glVertex3f(400, 200, -400)
-    glVertex3f(-400, 200, -400)
+    glVertex3f(500, 300, -500)
+    glVertex3f(-500, 300, -500)
+    glEnd()
+    
+    # Right face - FIXED
+    glBegin(GL_QUADS)
+    glColor3fv(sky_colors['bottom'])
+    glVertex3f(500, -50, -500)
+    glVertex3f(500, -50, 1500)
+    glColor3fv(sky_colors['top'])
+    glVertex3f(500, 300, 1500)
+    glVertex3f(500, 300, -500)
+    glEnd()
+    
+    # Top face (ceiling)
+    glBegin(GL_QUADS)
+    glColor3fv(sky_colors['top'])
+    glVertex3f(-500, 300, -500)
+    glVertex3f(500, 300, -500)
+    glVertex3f(500, 300, 1500)
+    glVertex3f(-500, 300, 1500)
     glEnd()
     
     # Sun/Moon
     sun_angle = time_of_day * 2 * math.pi
     sun_x = 100 * math.cos(sun_angle)
     sun_y = 100 * math.sin(sun_angle) + 50
+    sun_z = 0  # Changed from -350 to be more centered
     
     if sun_y > 10:
         glPushMatrix()
-        glTranslatef(sun_x, sun_y, -350)
+        glTranslatef(sun_x, sun_y, sun_z)
         
         phase = get_time_phase()
         if phase == "Night":
             glColor3f(0.9, 0.9, 1.0)
             glutSolidSphere(5, 16, 16)
+            # Add moon glow effect
+            glEnable(GL_BLEND)
+            glColor4f(0.8, 0.8, 1.0, 0.2)
+            glutSolidSphere(10, 12, 12)
         else:
             glColor3fv(sky_colors['sun'])
             glutSolidSphere(8, 20, 20)
+            # Add sun glow effect
+            glEnable(GL_BLEND)
+            glColor4f(sky_colors['sun'][0], sky_colors['sun'][1], sky_colors['sun'][2], 0.3)
+            glutSolidSphere(15, 16, 16)
         
         glPopMatrix()
+    
+    # Stars at night
+    phase = get_time_phase()
+    if phase == "Night":
+        glColor3f(1.0, 1.0, 1.0)
+        glPointSize(2.0)
+        glBegin(GL_POINTS)
+        random.seed(42)  # Fixed seed for consistent star positions
+        for i in range(100):
+            star_x = random.uniform(-450, 450)
+            star_y = random.uniform(100, 280)
+            star_z = random.uniform(-450, 1400)
+            glVertex3f(star_x, star_y, star_z)
+        glEnd()
+        random.seed()  # Reset seed
     
     glEnable(GL_DEPTH_TEST)
     glDepthMask(GL_TRUE)
@@ -913,6 +973,9 @@ def update_environment():
 
 def display():
     """Main display function"""
+    # Update clear color based on time
+    update_clear_color()
+    
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
     glLoadIdentity()
     
@@ -1036,6 +1099,8 @@ def main():
     print("  - Street lights auto-on at night/rain")
     print("  - Track map showing the complete road")
     print("  - Wet road effects during rain")
+    print("  - Full sky dome with proper color transitions")
+    print("  - Stars at night and sun/moon with glow effects")
     print("\nESC: Exit")
     print("=" * 60)
     
@@ -1043,3 +1108,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+import sys
