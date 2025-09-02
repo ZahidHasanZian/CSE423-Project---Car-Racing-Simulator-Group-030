@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-3D Racing Game Environment with Fixed-Length Straight Track
-Complete code with proper sky rendering for day/night cycle
+3D Racing Game with Player Vehicle, Obstacles, Powerups, and Collision Detection
+Extended from the original template with complete racing game mechanics
 """
 
 from OpenGL.GL import *
@@ -17,10 +17,17 @@ WINDOW_WIDTH = 1000
 WINDOW_HEIGHT = 800
 
 # Camera variables (from template)
-camera_pos = [0, 30, 60]  # Raised and moved back for better view
+camera_pos = [0, 6, 8]  # Even closer and lower for ultra-close bumper cam POV
 camera_look = [0, 0, 0]
-fovY = 60
+fovY = 75  # Even wider FOV for ultra-close view
 camera_angle = 0
+camera_follow_vehicle = True  # New: Enable/disable camera following
+camera_distance = 8  # Ultra-close behind vehicle - extreme bumper cam style
+camera_height = 6    # Even lower height - very close to vehicle
+camera_smooth_factor = 0.25   # Faster camera following for ultra-close view
+current_camera_x = 0.0
+current_camera_y = 6.0
+current_camera_z = 8.0
 
 # Road configuration
 ROAD_WIDTH = 20
@@ -47,6 +54,605 @@ time_speed = 0.0001
 # Visual effects
 use_fog = False
 use_lighting = True
+
+# ===== NEW RACING GAME FEATURES =====
+
+# Game state
+game_state = "playing"  # playing, game_over, paused
+score = 0
+lives = 3
+game_time = 0.0
+
+# Player vehicle
+class Vehicle:
+    def __init__(self, vehicle_type="car"):
+        self.type = vehicle_type
+        self.reset_position()
+        self.setup_vehicle_properties()
+    
+    def setup_vehicle_properties(self):
+        """Set vehicle-specific properties with realistic physics"""
+        if self.type == "cycle":
+            self.max_speed = 1.8  # Reduced from 8.0 - light and nimble
+            self.acceleration = 0.10  # Reduced for more gradual build-up
+            self.turn_speed = 2.0  # Much more realistic turning - was 5.0
+            self.brake_power = 0.8  # Effective braking for light vehicle
+            self.drift_factor = 0.9  # High drift - very light
+            self.weight = 0.3
+            self.size = [1.5, 1.0, 3.0]  # width, height, length
+        elif self.type == "bike":
+            self.max_speed = 2.5  # Reduced from 10.0 - balanced performance
+            self.acceleration = 0.18  # Moderate acceleration
+            self.turn_speed = 2.5  # Much more realistic turning - was 4.0
+            self.brake_power = 1.0  # Strong braking
+            self.drift_factor = 0.6  # Medium drift - balanced
+            self.weight = 0.6
+            self.size = [2.0, 1.2, 4.0]
+        else:  # car
+            self.max_speed = 3.5  # Reduced from 12.0 - powerful but controlled
+            self.acceleration = 0.20  # Strong but not instant
+            self.turn_speed = 3.0  # Much more realistic turning - was 3.5
+            self.brake_power = 1.2  # Very strong braking for heavy vehicle
+            self.drift_factor = 0.2  # Low drift - very stable
+            self.weight = 1.0
+            self.size = [2.5, 1.5, 5.0]
+    
+    def reset_position(self):
+        """Reset vehicle to starting position"""
+        self.x = 0.0
+        self.z = ROAD_START + 10  # Start slightly after the start line
+        self.y = 0.5  # Slightly above ground
+        self.rotation = 0.0  # Facing forward
+        self.speed = 0.0
+        self.velocity_x = 0.0
+        self.velocity_z = 0.0
+        
+        # Enhanced physics variables
+        self.target_rotation = 0.0  # Smooth rotation target
+        self.rotation_velocity = 0.0  # Rotation momentum
+        self.sideways_velocity = 0.0  # Drift/slide velocity
+        self.engine_rpm = 0.0  # Engine sound simulation
+        self.suspension_offset = 0.0  # Bounce effect
+        self.tilt_angle = 0.0  # Banking in turns
+    
+    def update(self, keys_pressed):
+        """Update vehicle position and physics with realistic momentum and braking"""
+        if game_state != "playing":
+            return
+        
+        # Enhanced input handling with realistic feel
+        throttle_input = 0.0
+        brake_input = 0.0
+        steering_input = 0.0
+        
+        # Throttle (forward) - W key or Up arrow
+        if keys_pressed.get(b'w') or keys_pressed.get(b'W') or keys_pressed.get(GLUT_KEY_UP):
+            throttle_input = 1.0
+        
+        # Brake (slow down) - S key or Down arrow (NOT reverse)
+        if keys_pressed.get(b's') or keys_pressed.get(b'S') or keys_pressed.get(GLUT_KEY_DOWN):
+            brake_input = 1.0
+        
+        # Steering (left/right)
+        if keys_pressed.get(b'a') or keys_pressed.get(b'A') or keys_pressed.get(GLUT_KEY_LEFT):
+            steering_input = 1.0
+        elif keys_pressed.get(b'd') or keys_pressed.get(b'D') or keys_pressed.get(GLUT_KEY_RIGHT):
+            steering_input = -1.0
+        
+        # Realistic acceleration with momentum system
+        speed_limit = self.max_speed * (speed_boost_multiplier if speed_boost_active else 1.0)
+        
+        if throttle_input > 0:
+            # Progressive acceleration - builds up gradually like real vehicles
+            # Faster acceleration at low speeds, slower at high speeds
+            acceleration_factor = 1.0 - (self.speed / speed_limit) * 0.6
+            self.speed = min(self.speed + self.acceleration * acceleration_factor * throttle_input, speed_limit)
+            self.engine_rpm = min(self.engine_rpm + 0.08, 1.0)
+        elif brake_input > 0:
+            # Enhanced braking - can bring vehicle to complete stop
+            # Braking is effective at all speeds, with extra force at low speeds
+            if self.speed > 0.5:
+                # At higher speeds, use normal brake power
+                brake_effectiveness = min(1.0, self.speed / 2.0)
+                self.speed = max(0, self.speed - self.brake_power * brake_effectiveness * brake_input)
+            else:
+                # At low speeds, use stronger braking to ensure complete stop
+                self.speed = max(0, self.speed - self.brake_power * 2.0 * brake_input)
+            
+            # Ensure complete stop when brake is held
+            if self.speed < 0.1:
+                self.speed = 0.0
+                self.velocity_x = 0.0
+                self.velocity_z = 0.0
+            
+            self.engine_rpm = max(self.engine_rpm - 0.15, 0.0)
+        else:
+            # Natural momentum and deceleration - vehicle keeps moving like real life
+            # Very gradual slowdown to maintain realistic feel
+            decel_factor = 0.008 + (self.speed / speed_limit) * 0.012  # Much gentler deceleration
+            if self.speed > 0:
+                self.speed = max(0, self.speed - decel_factor)
+                # Ensure complete stop at very low speeds
+                if self.speed < 0.05:
+                    self.speed = 0.0
+                    self.velocity_x = 0.0
+                    self.velocity_z = 0.0
+            elif self.speed < 0:
+                self.speed = min(0, self.speed + decel_factor)
+                # Ensure complete stop at very low speeds
+                if self.speed > -0.05:
+                    self.speed = 0.0
+                    self.velocity_x = 0.0
+                    self.velocity_z = 0.0
+            
+            # Engine RPM naturally decreases but maintains some momentum
+            self.engine_rpm = max(self.engine_rpm - 0.03, 0.0)
+        
+        # Enhanced steering with momentum and speed-dependent response
+        if abs(steering_input) > 0:
+            # Speed-dependent steering sensitivity - much more realistic
+            # At low speeds: more sensitive for parking/tight turns
+            # At high speeds: much less sensitive for stability
+            # Add extra dampening at very high speeds for safety
+            speed_factor = self.speed / speed_limit
+            if speed_factor > 0.8:  # Very high speeds
+                steering_sensitivity = 0.1  # Very low sensitivity for safety
+            else:
+                steering_sensitivity = 1.0 - speed_factor * 0.8  # Normal speed dependency
+            
+            # Additional dampening for realistic feel
+            base_steering_dampening = 0.6  # Reduce overall steering responsiveness
+            
+            # Weight-based steering factor - heavier vehicles turn more slowly
+            weight_steering_factor = 1.0 - (self.weight * 0.3)  # Heavier = slower turning
+            
+            # Calculate target rotation with realistic dampening and weight consideration
+            turn_amount = steering_input * self.turn_speed * steering_sensitivity * base_steering_dampening * weight_steering_factor
+            
+            # Limit maximum turn rate for stability
+            max_turn_per_frame = 0.8  # Maximum degrees per frame
+            turn_amount = max(-max_turn_per_frame, min(max_turn_per_frame, turn_amount))
+            
+            # ROTATION RESTRICTION: Once vehicle crosses start line, prevent 180° turns
+            # This ensures vehicle can only face roughly forward along the road
+            if self.z > ROAD_START + 5:  # Vehicle has crossed start line
+                # Calculate the allowed rotation range (roughly forward direction)
+                # Allow turning left/right but prevent complete 180° rotation
+                max_rotation_left = 90.0   # Maximum left turn (90 degrees left)
+                max_rotation_right = -90.0  # Maximum right turn (90 degrees right)
+                
+                # Calculate new target rotation
+                new_target_rotation = self.target_rotation + turn_amount
+                
+                # Clamp rotation to allowed range
+                if new_target_rotation > max_rotation_left:
+                    new_target_rotation = max_rotation_left
+                    # Notify player when rotation is clamped
+                    if not hasattr(self, 'rotation_clamp_notified'):
+                        print(f"Rotation restricted! {self.type.title()} can only turn up to 90° left/right after crossing start line.")
+                        self.rotation_clamp_notified = True
+                elif new_target_rotation < max_rotation_right:
+                    new_target_rotation = max_rotation_right
+                    # Notify player when rotation is clamped
+                    if not hasattr(self, 'rotation_clamp_notified'):
+                        print(f"Rotation restricted! {self.type.title()} can only turn up to 90° left/right after crossing start line.")
+                        self.rotation_clamp_notified = True
+                
+                # Only update target rotation if it's within allowed range
+                if new_target_rotation != self.target_rotation:
+                    self.target_rotation = new_target_rotation
+            else:
+                # Before crossing start line, allow full rotation for parking/maneuvering
+                self.target_rotation += turn_amount
+                # Reset notification flag when back before start line
+                if hasattr(self, 'rotation_clamp_notified'):
+                    delattr(self, 'rotation_clamp_notified')
+            
+            # Smooth rotation with momentum - more gradual
+            rotation_diff = self.target_rotation - self.rotation
+            self.rotation_velocity += rotation_diff * 0.05  # Reduced from 0.1 for more gradual response
+            self.rotation_velocity *= 0.85  # Increased damping from 0.9 for more stability
+            self.rotation += self.rotation_velocity
+            
+            # ROTATION CLAMPING: Ensure current rotation stays within allowed range after start line
+            if self.z > ROAD_START + 5:  # Vehicle has crossed start line
+                # Clamp current rotation to prevent 180° turns
+                max_rotation_left = 90.0   # Maximum left turn (90 degrees left)
+                max_rotation_right = -90.0  # Maximum right turn (90 degrees right)
+                
+                # Add small buffer zone for smoother clamping
+                buffer_zone = 2.0  # Degrees
+                
+                if self.rotation > max_rotation_left - buffer_zone:
+                    # Gradually slow down rotation as it approaches the limit
+                    if self.rotation > max_rotation_left:
+                        self.rotation = max_rotation_left
+                        self.rotation_velocity = 0  # Stop rotation momentum when clamped
+                    else:
+                        # Slow down rotation velocity as it approaches the limit
+                        self.rotation_velocity *= 0.5
+                elif self.rotation < max_rotation_right + buffer_zone:
+                    # Gradually slow down rotation as it approaches the limit
+                    if self.rotation < max_rotation_right:
+                        self.rotation = max_rotation_right
+                        self.rotation_velocity = 0  # Stop rotation momentum when clamped
+                    else:
+                        # Slow down rotation velocity as it approaches the limit
+                        self.rotation_velocity *= 0.5
+            
+            # Calculate tilt angle for banking effect
+            self.tilt_angle = rotation_diff * 0.2  # Reduced from 0.3 for subtler banking
+        else:
+            # Return to neutral when not steering - more realistic
+            # Gradually return to current rotation (don't snap back)
+            self.target_rotation = self.rotation
+            self.rotation_velocity *= 0.7  # More gradual return to neutral (was 0.8)
+            self.tilt_angle *= 0.85  # Return to level more gradually (was 0.9)
+        
+        # Enhanced movement physics with drift mechanics
+        if abs(self.speed) > 0.1:
+            angle_rad = math.radians(self.rotation)
+            
+            # Calculate forward velocity
+            forward_velocity = math.cos(angle_rad) * self.speed
+            
+            # Enhanced drift mechanics
+            if abs(self.rotation_velocity) > 0.5 and self.speed > 2.0:
+                # Vehicle is drifting - add sideways velocity
+                drift_intensity = abs(self.rotation_velocity) * self.drift_factor
+                self.sideways_velocity += math.sin(angle_rad) * drift_intensity * 0.1
+            else:
+                # Normal movement - gradually reduce sideways velocity
+                self.sideways_velocity *= 0.95
+            
+            # Apply sideways velocity (drift effect)
+            self.velocity_x = math.sin(angle_rad) * self.speed + self.sideways_velocity
+            self.velocity_z = forward_velocity
+            
+            # Suspension effects
+            self.suspension_offset = math.sin(time.time() * 10) * 0.05 * (self.speed / speed_limit)
+            
+                    # PREVENTIVE BOUNDARY CHECK with enhanced physics
+        new_x = self.x + self.velocity_x
+        new_z = self.z + self.velocity_z
+        
+        # Check X boundaries (left/right)
+        x_within_bounds = abs(new_x) <= ROAD_WIDTH / 2
+        
+        # Check Z boundaries (forward/backward) - allow backward movement but prevent going completely off track
+        # Allow temporary boundary violation during turning maneuvers for full 360-degree turns
+        z_within_bounds = new_z >= ROAD_START  # Allow backward movement to start line
+        
+        # Check if vehicle is turning (has significant rotation velocity)
+        # Also consider if vehicle is reversing for more turning freedom
+        is_turning = abs(self.rotation_velocity) > 0.5
+        is_reversing = self.velocity_z < 0  # Vehicle is moving backward
+        
+        if x_within_bounds and z_within_bounds:
+            # Both X and Z movements are within bounds
+            self.x = new_x
+            self.z = new_z
+        elif x_within_bounds and not z_within_bounds:
+            # Only X movement is allowed (car trying to go backwards)
+            self.x = new_x
+            # Allow temporary Z boundary violation during turning for full 360-degree turns
+            # Give more freedom during reverse turning for full 360-degree maneuvers
+            if (is_turning and new_z >= ROAD_START - 2.0) or (is_reversing and new_z >= ROAD_START - 3.0):
+                self.z = new_z
+            # Don't update z otherwise - car stays at current z
+        elif not x_within_bounds and z_within_bounds:
+            # Only Z movement is allowed (car trying to go sideways)
+            self.z = new_z
+            # Don't update x - car stays at current x
+        else:
+            # Both movements would put car out of bounds
+            # Allow temporary boundary violation during turning for full 360-degree turns
+            # Give more freedom during reverse turning for full 360-degree maneuvers
+            if is_turning or is_reversing:
+                if new_z >= ROAD_START - 3.0:  # Allow 3 units beyond start during turns/reverse
+                    self.z = new_z
+                if abs(new_x) <= ROAD_WIDTH / 2 + 1.5:  # Allow 1.5 units beyond sides during turns/reverse
+                    self.x = new_x
+            
+                    # Apply drift physics to boundary hits
+        if not x_within_bounds:
+            # Bounce off boundaries with drift effect
+            self.sideways_velocity *= -0.5  # Reverse drift direction
+            self.rotation_velocity *= -0.3  # Slight rotation bounce
+        
+        # Enhanced reverse turning - allow more freedom during reverse maneuvers
+        if is_reversing and abs(self.rotation_velocity) > 0.8:
+            # Vehicle is reversing and turning sharply - allow temporary boundary extension
+            # This enables full 360-degree turns while reversing
+            if self.z < ROAD_START - 1.0 and self.z >= ROAD_START - 4.0:
+                # Allow temporary extension beyond start boundary during reverse turning
+                pass  # Don't reset position during reverse turning maneuvers
+        
+        # Check road boundaries - STRICT BOUNDARY ENFORCEMENT
+        road_left_edge = -ROAD_WIDTH / 2
+        road_right_edge = ROAD_WIDTH / 2
+        road_start_edge = ROAD_START  # Allow backward movement to start line
+        
+        # Prevent car from going beyond road boundaries - IMMEDIATE CORRECTION
+        global boundary_hit_timer, boundary_hit_intensity
+        
+        # Check if car is out of bounds and correct immediately
+        if self.x < road_left_edge:
+            self.x = road_left_edge
+            self.speed *= 0.3  # Significant slowdown when hitting left edge
+            self.velocity_x = 0  # Stop horizontal movement
+            # Trigger boundary hit feedback
+            boundary_hit_timer = 0.5  # 0.5 seconds of feedback
+            boundary_hit_intensity = 2.0
+        elif self.x > road_right_edge:
+            self.x = road_right_edge
+            self.speed *= 0.3  # Significant slowdown when hitting right edge
+            self.velocity_x = 0  # Stop horizontal movement
+            # Trigger boundary hit feedback
+            boundary_hit_timer = 0.5  # 0.5 seconds of feedback
+            boundary_hit_intensity = 2.0
+        
+        # Check Z boundaries (forward/backward) - prevent going backwards beyond start
+        # Allow temporary boundary violation during turning maneuvers for full 360-degree turns
+        if self.z < road_start_edge:
+            # Check if vehicle is turning or reversing - allow temporary boundary violation
+            if (abs(self.rotation_velocity) > 0.5 and self.z >= road_start_edge - 2.0) or \
+               (self.velocity_z < 0 and self.z >= road_start_edge - 3.0):
+                # Allow temporary boundary violation during turns or reverse maneuvers
+                pass
+            else:
+                # Normal boundary enforcement
+                self.z = road_start_edge
+                self.speed *= 0.3  # Significant slowdown when hitting start boundary
+                self.velocity_z = 0  # Stop backward movement
+                # Trigger boundary hit feedback
+                boundary_hit_timer = 0.5  # 0.5 seconds of feedback
+                boundary_hit_intensity = 2.0
+        
+        # EMERGENCY RESET - if car somehow gets completely out of bounds
+        # Allow temporary boundary violation during turning maneuvers for full 360-degree turns
+        if abs(self.x) > ROAD_WIDTH / 2 + 1.0 or self.z < ROAD_START:
+            # Check if vehicle is turning or reversing - allow temporary boundary violation
+            if abs(self.rotation_velocity) > 0.5 or self.velocity_z < 0:
+                if abs(self.x) > ROAD_WIDTH / 2 + 2.5 or self.z < ROAD_START - 3.0:
+                    # Only reset if way out of bounds during turns or reverse maneuvers
+                    self.x = 0.0  # Reset to road center
+                    self.z = ROAD_START + 5  # Reset to safe position after start line
+                    self.speed *= 0.3  # More aggressive speed reduction
+                    self.velocity_x = 0  # Stop all horizontal movement
+                    self.velocity_z = 0  # Stop forward movement temporarily
+            else:
+                # Normal emergency reset
+                self.x = 0.0  # Reset to road center
+                self.z = ROAD_START + 5  # Reset to safe position after start line
+                self.speed *= 0.3  # More aggressive speed reduction
+                self.velocity_x = 0  # Stop all horizontal movement
+                self.velocity_z = 0  # Stop forward movement temporarily
+        
+        # Check if reached finish
+        if self.z >= ROAD_END:
+            self.handle_finish()
+        
+
+    
+
+    
+    def handle_collision(self, collision_type):
+        """Handle different types of collisions"""
+        global lives, game_state, has_shield
+        
+        if collision_type == "obstacle":
+            if has_shield:
+                print("Shield protected you from collision!")
+                has_shield = False
+                return
+            else:
+                lives -= 1
+                print(f"Collision! Lives remaining: {lives}")
+                if lives <= 0:
+                    game_state = "game_over"
+                else:
+                    self.reset_position()
+        
+        elif collision_type == "road_edge":
+            lives -= 1
+            print(f"Fell off road! Lives remaining: {lives}")
+            if lives <= 0:
+                game_state = "game_over"
+            else:
+                self.reset_position()
+    
+    def handle_finish(self):
+        """Handle reaching the finish line"""
+        global game_state, score
+        game_state = "game_over"
+        score = int(game_time * 100) + lives * 1000
+        print(f"Congratulations! You finished in {game_time:.1f} seconds!")
+        print(f"Final Score: {score}")
+    
+    def get_aabb(self):
+        """Get vehicle's AABB for collision detection"""
+        half_width = self.size[0] / 2
+        half_length = self.size[2] / 2
+        return {
+            'x': self.x - half_width,
+            'y': self.y,
+            'z': self.z - half_length,
+            'width': self.size[0],
+            'height': self.size[1],
+            'length': self.size[2]
+        }
+
+# Game objects
+player_vehicle = Vehicle("car")
+keys_pressed = {}
+
+# Obstacles
+class Obstacle:
+    def __init__(self, x, z, obstacle_type="box"):
+        self.x = x
+        self.z = z
+        self.y = 0.5
+        self.type = obstacle_type
+        self.rotation = 0.0
+        self.size = [2.0, 2.0, 2.0] if obstacle_type == "box" else [1.5, 2.0, 1.5]
+        self.collected = False
+    
+    def update(self):
+        """Update obstacle animation"""
+        self.rotation += 1.0  # Rotate slowly
+    
+    def get_aabb(self):
+        """Get obstacle's AABB for collision detection"""
+        half_width = self.size[0] / 2
+        half_length = self.size[2] / 2
+        return {
+            'x': self.x - half_width,
+            'y': self.y,
+            'z': self.z - half_length,
+            'width': self.size[0],
+            'height': self.size[1],
+            'length': self.size[2]
+        }
+
+obstacles = []
+
+# Powerups
+class Powerup:
+    def __init__(self, x, z, powerup_type="speed"):
+        self.x = x
+        self.z = z
+        self.y = 1.0
+        self.type = powerup_type
+        self.rotation = 0.0
+        self.scale = 1.0
+        self.scale_direction = 1
+        self.collected = False
+        self.size = 1.0
+    
+    def update(self):
+        """Update powerup animation with hovering effects"""
+        if self.collected:
+            return
+        
+        self.rotation += 3.0  # Rotate faster than obstacles
+        
+        # Enhanced hovering animation
+        # Vertical floating motion
+        self.y = 1.0 + math.sin(time.time() * 3.0) * 0.3
+        
+        # Pulsing scale effect
+        self.scale += 0.02 * self.scale_direction
+        if self.scale > 1.2:
+            self.scale_direction = -1
+        elif self.scale < 0.8:
+            self.scale_direction = 1
+        
+        # Add slight horizontal sway
+        self.x += math.sin(time.time() * 2.0) * 0.01
+    
+    def get_aabb(self):
+        """Get powerup's AABB for collision detection"""
+        half_size = self.size / 2
+        return {
+            'x': self.x - half_size,
+            'y': self.y - half_size,
+            'z': self.z - half_size,
+            'width': self.size,
+            'height': self.size,
+            'length': self.size
+        }
+
+powerups = []
+
+# Powerup effects
+has_shield = False
+speed_boost_active = False
+speed_boost_timer = 0.0
+speed_boost_multiplier = 1.5
+
+# Road boundary feedback
+boundary_hit_timer = 0.0
+boundary_hit_intensity = 0.0
+
+# Collision detection
+def has_collided(aabb1, aabb2):
+    """AABB collision detection"""
+    return (aabb1['x'] < aabb2['x'] + aabb2['width'] and
+            aabb1['x'] + aabb1['width'] > aabb2['x'] and
+            aabb1['z'] < aabb2['z'] + aabb2['length'] and
+            aabb1['z'] + aabb1['length'] > aabb2['z'])
+
+def check_collisions():
+    """Check all collisions in the game"""
+    global has_shield, speed_boost_active, speed_boost_timer, obstacles, powerups
+    
+    vehicle_aabb = player_vehicle.get_aabb()
+    
+    # Check obstacle collisions
+    for obstacle in obstacles:
+        if not obstacle.collected and has_collided(vehicle_aabb, obstacle.get_aabb()):
+            player_vehicle.handle_collision("obstacle")
+            obstacle.collected = True
+    
+    # Check powerup collisions
+    for powerup in powerups:
+        if not powerup.collected and has_collided(vehicle_aabb, powerup.get_aabb()):
+            if powerup.type == "speed":
+                speed_boost_active = True
+                speed_boost_timer = 5.0  # 5 seconds
+                print("Speed boost activated!")
+            elif powerup.type == "shield":
+                has_shield = True
+                print("Shield activated!")
+            powerup.collected = True
+
+# Object spawning
+def spawn_objects():
+    """Spawn obstacles and powerups with enhanced boundary checking"""
+    global obstacles, powerups
+    
+
+    
+    # Spawn obstacles periodically
+    if len(obstacles) < 8 and random.random() < 0.02:
+        # Ensure obstacles spawn well within road boundaries with margin for their size
+        margin = 5.0  # Increased from 4.0 to ensure objects are clearly within visible track
+        spawn_min_x = -ROAD_WIDTH/2 + margin
+        spawn_max_x = ROAD_WIDTH/2 - margin
+        x = random.uniform(spawn_min_x, spawn_max_x)
+        z = random.uniform(player_vehicle.z + 50, player_vehicle.z + 200)
+        
+        # Don't spawn obstacles after the finish line
+        if z < ROAD_END - 50:  # Leave 50 units before finish line
+            obstacle_type = random.choice(["box", "cylinder"])
+            obstacles.append(Obstacle(x, z, obstacle_type))
+            
+            
+
+    # Spawn powerups periodically
+    if len(powerups) < 4 and random.random() < 0.01:
+        # Ensure powerups spawn well within road boundaries with margin for their size
+        margin = 4.0  # Increased from 4.0 to ensure objects are clearly within visible track
+        spawn_min_x = -ROAD_WIDTH/2 + margin
+        spawn_max_x = ROAD_WIDTH/2 - margin
+        x = random.uniform(spawn_min_x, spawn_max_x)
+        z = random.uniform(player_vehicle.z + 30, player_vehicle.z + 150)
+        
+        # Don't spawn powerups after the finish line
+        if z < ROAD_END - 50:  # Leave 50 units before finish line
+            powerup_type = random.choice(["speed", "shield"])
+            powerups.append(Powerup(x, z, powerup_type))
+            
+            
+
+    # Clean up objects that are too far behind
+    obstacles = [obs for obs in obstacles if obs.z > player_vehicle.z - 100]
+    powerups = [pwr for pwr in powerups if pwr.z > player_vehicle.z - 100]
+    
+
+
+# ===== EXISTING TEMPLATE FUNCTIONS (MODIFIED) =====
 
 def init_scene():
     """Initialize OpenGL settings with proper depth configuration"""
@@ -263,6 +869,8 @@ def update_clear_color():
 
 def setup_camera():
     """Configure camera with perspective projection (from template)"""
+    global current_camera_x, current_camera_y, current_camera_z
+    
     glMatrixMode(GL_PROJECTION)
     glLoadIdentity()
     # Raised and moved back for better view of longer road
@@ -271,9 +879,39 @@ def setup_camera():
     glMatrixMode(GL_MODELVIEW)
     glLoadIdentity()
     
-    gluLookAt(camera_pos[0], camera_pos[1], camera_pos[2],
-              camera_look[0], camera_look[1], camera_look[2],
-              0, 1, 0)
+    # Camera following logic
+    if camera_follow_vehicle and game_state == "playing":
+        # Calculate target camera position behind the vehicle
+        vehicle_angle_rad = math.radians(player_vehicle.rotation)
+        target_camera_x = player_vehicle.x - camera_distance * math.sin(vehicle_angle_rad)
+        target_camera_z = player_vehicle.z - camera_distance * math.cos(vehicle_angle_rad)
+        target_camera_y = player_vehicle.y + camera_height
+        
+        # Smooth camera movement
+        current_camera_x += (target_camera_x - current_camera_x) * camera_smooth_factor
+        current_camera_y += (target_camera_y - current_camera_y) * camera_smooth_factor
+        current_camera_z += (target_camera_z - current_camera_z) * camera_smooth_factor
+        
+        # Add screen shake effect when hitting road boundaries
+        if boundary_hit_intensity > 0:
+            shake_x = random.uniform(-boundary_hit_intensity, boundary_hit_intensity)
+            shake_y = random.uniform(-boundary_hit_intensity * 0.5, boundary_hit_intensity * 0.5)
+            current_camera_x += shake_x
+            current_camera_y += shake_y
+        
+        # Look at the vehicle
+        look_x = player_vehicle.x
+        look_z = player_vehicle.z
+        look_y = player_vehicle.y + 1.0  # Look even closer to vehicle for ultra-close bumper cam POV
+        
+        gluLookAt(current_camera_x, current_camera_y, current_camera_z,
+                  look_x, look_y, look_z,
+                  0, 1, 0)
+    else:
+        # Use static camera position
+        gluLookAt(camera_pos[0], camera_pos[1], camera_pos[2],
+                  camera_look[0], camera_look[1], camera_look[2],
+                  0, 1, 0)
 
 def setup_lighting():
     """Setup dynamic lighting based on time of day"""
@@ -406,6 +1044,33 @@ def draw_road():
     glVertex3f(-ROAD_WIDTH/2, 0, ROAD_END)
     glEnd()
     
+    # Debug: Draw spawn boundaries as colored lines
+    if game_state == "playing":
+        # Obstacle spawn boundary (green line)
+        glColor3f(0.0, 1.0, 0.0)  # Green
+        glLineWidth(2.0)
+        glBegin(GL_LINES)
+        for z in range(int(ROAD_START), int(ROAD_END), 10):
+            # Left boundary
+            glVertex3f(-ROAD_WIDTH/2 + 4.0, 0.02, z)
+            glVertex3f(-ROAD_WIDTH/2 + 4.0, 0.02, z + 5)
+            # Right boundary
+            glVertex3f(ROAD_WIDTH/2 - 4.0, 0.02, z)
+            glVertex3f(ROAD_WIDTH/2 - 4.0, 0.02, z + 5)
+        glEnd()
+        
+        # Powerup spawn boundary (blue line)
+        glColor3f(0.0, 0.0, 1.0)  # Blue
+        glBegin(GL_LINES)
+        for z in range(int(ROAD_START), int(ROAD_END), 10):
+            # Left boundary
+            glVertex3f(-ROAD_WIDTH/2 + 3.0, 0.02, z)
+            glVertex3f(-ROAD_WIDTH/2 + 3.0, 0.02, z + 5)
+            # Right boundary
+            glVertex3f(ROAD_WIDTH/2 - 3.0, 0.02, z)
+            glVertex3f(ROAD_WIDTH/2 - 3.0, 0.02, z + 5)
+        glEnd()
+    
     # Draw start line (green)
     glColor3f(0, 1, 0)
     glBegin(GL_QUADS)
@@ -441,9 +1106,9 @@ def draw_road():
             glVertex3f(-0.3, 0.01, z + 15)
             glEnd()
     
-    # Side lines (continuous)
-    glColor3f(1, 1, 1)
-    glLineWidth(3.0)
+    # Side lines (continuous) - THICKER AND MORE VISIBLE
+    glColor3f(1, 0, 0)  # Changed to RED for better visibility
+    glLineWidth(5.0)  # Increased from 3.0 to make more visible
     glBegin(GL_LINES)
     # Left side line
     glVertex3f(-ROAD_WIDTH/2, 0.01, ROAD_START)
@@ -452,6 +1117,131 @@ def draw_road():
     glVertex3f(ROAD_WIDTH/2, 0.01, ROAD_START)
     glVertex3f(ROAD_WIDTH/2, 0.01, ROAD_END)
     glEnd()
+    
+    # Additional boundary markers - small red cubes at regular intervals
+    marker_spacing = 20
+    for z in range(int(ROAD_START), int(ROAD_END), marker_spacing):
+        # Left boundary marker
+        glColor3f(1.0, 0.0, 0.0)  # Red
+        glPushMatrix()
+        glTranslatef(-ROAD_WIDTH/2 - 0.5, 0.5, z)
+        glutSolidCube(1.0)
+        glPopMatrix()
+        
+        # Right boundary marker
+        glPushMatrix()
+        glTranslatef(ROAD_WIDTH/2 + 0.5, 0.5, z)
+        glutSolidCube(1.0)
+        glPopMatrix()
+    
+    # Enhanced road boundary visualization - add floating boundary indicators
+    glColor3f(1.0, 0.0, 0.0)  # Red
+    for z in range(int(ROAD_START), int(ROAD_END), 10):
+        # Left boundary floating indicator
+        glPushMatrix()
+        glTranslatef(-ROAD_WIDTH/2, 2.0, z)
+        glutSolidSphere(0.3, 8, 8)
+        glPopMatrix()
+        
+        # Right boundary floating indicator
+        glPushMatrix()
+        glTranslatef(ROAD_WIDTH/2, 2.0, z)
+        glutSolidSphere(0.3, 8, 8)
+        glPopMatrix()
+    
+    # Additional boundary clarity - draw vertical boundary walls
+    glColor4f(1.0, 0.0, 0.0, 0.3)  # Semi-transparent red
+    glEnable(GL_BLEND)
+    
+    # Left boundary wall
+    glBegin(GL_QUADS)
+    for z in range(int(ROAD_START), int(ROAD_END), 20):
+        glVertex3f(-ROAD_WIDTH/2 - 0.1, 0, z)
+        glVertex3f(-ROAD_WIDTH/2 - 0.1, 3, z)
+        glVertex3f(-ROAD_WIDTH/2 - 0.1, 3, z + 20)
+        glVertex3f(-ROAD_WIDTH/2 - 0.1, 0, z + 20)
+    glEnd()
+    
+    # Right boundary wall
+    glBegin(GL_QUADS)
+    for z in range(int(ROAD_START), int(ROAD_END), 20):
+        glVertex3f(ROAD_WIDTH/2 + 0.1, 0, z)
+        glVertex3f(ROAD_WIDTH/2 + 0.1, 3, z)
+        glVertex3f(ROAD_WIDTH/2 + 0.1, 3, z + 20)
+        glVertex3f(ROAD_WIDTH/2 + 0.1, 0, z + 20)
+    glEnd()
+    
+    glDisable(GL_BLEND)
+    
+    # Bright boundary markers at exact road edges
+    glColor3f(1.0, 1.0, 0.0)  # Bright yellow
+    glLineWidth(3.0)
+    glBegin(GL_LINES)
+    for z in range(int(ROAD_START), int(ROAD_END), 10):
+        # Left edge marker
+        glVertex3f(-ROAD_WIDTH/2, 0.05, z)
+        glVertex3f(-ROAD_WIDTH/2, 0.05, z + 5)
+        # Right edge marker
+        glVertex3f(ROAD_WIDTH/2, 0.05, z)
+        glVertex3f(ROAD_WIDTH/2, 0.05, z + 5)
+    glEnd()
+    
+    # Road boundary warning stripes (red and white) - helps player see track limits
+    warning_width = 2.0  # Increased from 1.0 to make more visible
+    stripe_length = 4.0  # Increased from 3.0 to make more visible
+    spacing = 2.0  # Reduced from 3.0 to make stripes closer together
+    
+    for z in range(int(ROAD_START), int(ROAD_END), int(spacing + stripe_length)):
+        # Left boundary warning
+        glColor3f(1.0, 0.0, 0.0)  # Red
+        glBegin(GL_QUADS)
+        glVertex3f(-ROAD_WIDTH/2 - warning_width, 0.02, z)
+        glVertex3f(-ROAD_WIDTH/2, 0.02, z)
+        glVertex3f(-ROAD_WIDTH/2, 0.02, z + stripe_length)
+        glVertex3f(-ROAD_WIDTH/2 - warning_width, 0.02, z + stripe_length)
+        glEnd()
+        
+        # Right boundary warning
+        glBegin(GL_QUADS)
+        glVertex3f(ROAD_WIDTH/2, 0.02, z)
+        glVertex3f(ROAD_WIDTH/2 + warning_width, 0.02, z)
+        glVertex3f(ROAD_WIDTH/2 + warning_width, 0.02, z + stripe_length)
+        glVertex3f(ROAD_WIDTH/2, 0.02, z + stripe_length)
+        glEnd()
+        
+        # White stripes between red ones
+        glColor3f(1.0, 1.0, 1.0)  # White
+        glBegin(GL_QUADS)
+        glVertex3f(-ROAD_WIDTH/2 - warning_width, 0.02, z + stripe_length)
+        glVertex3f(-ROAD_WIDTH/2, 0.02, z + stripe_length)
+        glVertex3f(-ROAD_WIDTH/2, 0.02, z + stripe_length + spacing)
+        glVertex3f(-ROAD_WIDTH/2 - warning_width, 0.02, z + stripe_length + spacing)
+        glEnd()
+        
+        glBegin(GL_QUADS)
+        glVertex3f(ROAD_WIDTH/2, 0.02, z + stripe_length)
+        glVertex3f(ROAD_WIDTH/2 + warning_width, 0.02, z + stripe_length)
+        glVertex3f(ROAD_WIDTH/2 + warning_width, 0.02, z + stripe_length + spacing)
+        glVertex3f(ROAD_WIDTH/2, 0.02, z + stripe_length + spacing)
+        glEnd()
+        
+        # Add diagonal warning stripes for extra visibility
+        glColor3f(1.0, 0.5, 0.0)  # Orange
+        glBegin(GL_QUADS)
+        # Left diagonal
+        glVertex3f(-ROAD_WIDTH/2 - warning_width, 0.03, z)
+        glVertex3f(-ROAD_WIDTH/2 - warning_width, 0.03, z + stripe_length)
+        glVertex3f(-ROAD_WIDTH/2 - warning_width + 0.5, 0.03, z + stripe_length)
+        glVertex3f(-ROAD_WIDTH/2 - warning_width + 0.5, 0.03, z)
+        glEnd()
+        
+        # Right diagonal
+        glBegin(GL_QUADS)
+        glVertex3f(ROAD_WIDTH/2 + warning_width - 0.5, 0.03, z)
+        glVertex3f(ROAD_WIDTH/2 + warning_width - 0.5, 0.03, z + stripe_length)
+        glVertex3f(ROAD_WIDTH/2 + warning_width, 0.03, z + stripe_length)
+        glVertex3f(ROAD_WIDTH/2 + warning_width, 0.03, z)
+        glEnd()
     
     # Wet road reflection if raining
     if weather_mode in ["rain", "heavy_rain"]:
@@ -810,7 +1600,7 @@ def draw_ground():
     glEnd()
 
 def draw_road_map():
-    """Draw overhead map view of the straight road"""
+    """Draw overhead map view of the straight road with vehicle position"""
     glDisable(GL_LIGHTING)
     glDisable(GL_DEPTH_TEST)
     
@@ -868,6 +1658,53 @@ def draw_road_map():
     glBegin(GL_POINTS)
     glVertex2f(center_x, map_y + 20)
     glEnd()
+    
+    # Draw vehicle position on map (ONLY when game is playing)
+    if game_state == "playing":
+        # Calculate vehicle position on map
+        # Map represents road from ROAD_START to ROAD_END
+        # Map height represents this distance
+        road_length = ROAD_END - ROAD_START
+        map_road_length = map_height - 20  # Leave 10 units margin top and bottom
+        
+        # Calculate vehicle's Z position relative to road start/end
+        vehicle_progress = (player_vehicle.z - ROAD_START) / road_length
+        vehicle_map_y = map_y + map_height - 20 - (vehicle_progress * map_road_length)
+        
+        # Calculate vehicle's X position relative to road width
+        road_half_width = ROAD_WIDTH / 2
+        vehicle_x_ratio = player_vehicle.x / road_half_width
+        vehicle_map_x = center_x + (vehicle_x_ratio * (map_width / 2 - 5))
+        
+        # Clamp vehicle position to map bounds
+        vehicle_map_x = max(map_x + 5, min(map_x + map_width - 5, vehicle_map_x))
+        vehicle_map_y = max(map_y + 10, min(map_y + map_height - 10, vehicle_map_y))
+        
+        # Draw vehicle as a colored dot
+        if player_vehicle.type == "cycle":
+            glColor3f(1.0, 0.8, 0.0)  # Golden yellow for bicycle
+        elif player_vehicle.type == "bike":
+            glColor3f(0.0, 0.0, 0.5)  # Dark blue for motorcycle
+        else:
+            glColor3f(0.8, 0.2, 0.2)  # Red for car
+        
+        glPointSize(8.0)
+        glBegin(GL_POINTS)
+        glVertex2f(vehicle_map_x, vehicle_map_y)
+        glEnd()
+        
+        # Draw vehicle direction indicator (small line showing which way it's facing)
+        direction_length = 6.0
+        angle_rad = math.radians(player_vehicle.rotation)
+        dir_x = vehicle_map_x + math.sin(angle_rad) * direction_length
+        dir_y = vehicle_map_y - math.cos(angle_rad) * direction_length
+        
+        glColor3f(1.0, 1.0, 1.0)  # White direction indicator
+        glLineWidth(2.0)
+        glBegin(GL_LINES)
+        glVertex2f(vehicle_map_x, vehicle_map_y)
+        glVertex2f(dir_x, dir_y)
+        glEnd()
     
     # Map title
     glColor3f(1, 1, 1)
@@ -954,13 +1791,17 @@ def draw_hud():
 
 def update_environment():
     """Update environment animations for fixed road"""
-    global time_of_day
+    global time_of_day, game_time
     
     # Update time
     if auto_time:
         time_of_day += time_speed
         if time_of_day > 1.0:
             time_of_day = 0.0
+    
+    # Update game time
+    if game_state == "playing":
+        game_time += 0.016  # Assuming 60 FPS
     
     # Update clouds (they still move)
     for cloud in clouds:
@@ -970,6 +1811,1264 @@ def update_environment():
     
     # Update rain
     update_rain_particles()
+    
+    # Update game objects
+    if game_state == "playing":
+        player_vehicle.update(keys_pressed)
+        check_collisions()
+        spawn_objects()
+        
+        # Update obstacles
+        for obstacle in obstacles:
+            obstacle.update()
+        
+        # Update powerups
+        for powerup in powerups:
+            powerup.update()
+        
+        # Update speed boost
+        global speed_boost_active, speed_boost_timer
+        if speed_boost_active:
+            speed_boost_timer -= 0.016
+            if speed_boost_timer <= 0:
+                speed_boost_active = False
+                print("Speed boost expired!")
+        
+        # Update boundary hit feedback
+        global boundary_hit_timer, boundary_hit_intensity
+        if boundary_hit_timer > 0:
+            boundary_hit_timer -= 0.016
+            boundary_hit_intensity *= 0.95  # Gradually reduce intensity
+            if boundary_hit_timer <= 0:
+                boundary_hit_intensity = 0.0
+
+def draw_player_vehicle():
+    """Draw the player's vehicle"""
+    if game_state != "playing":
+        return
+    
+    glPushMatrix()
+    glTranslatef(player_vehicle.x, player_vehicle.y + player_vehicle.suspension_offset, player_vehicle.z)
+    glRotatef(player_vehicle.rotation, 0, 1, 0)
+    glRotatef(player_vehicle.tilt_angle, 1, 0, 0)  # Apply tilt for banking effect
+    
+    # Apply speed boost effect
+    if speed_boost_active:
+        glColor3f(1.0, 0.8, 0.0)  # Golden glow
+    else:
+        # Vehicle-specific colors based on type
+        if player_vehicle.type == "cycle":
+            glColor3f(1.0, 0.8, 0.0)  # Golden yellow for bicycle
+        elif player_vehicle.type == "bike":
+            glColor3f(0.0, 0.0, 0.5)  # Dark blue for motorcycle
+        else:
+            glColor3f(0.8, 0.2, 0.2)  # Red for car
+    
+    # Add drift effect glow when drifting
+    if abs(player_vehicle.sideways_velocity) > 0.5:
+        glEnable(GL_BLEND)
+        drift_intensity = min(abs(player_vehicle.sideways_velocity) * 0.5, 0.3)
+        glColor4f(1.0, 0.5, 0.0, drift_intensity)  # Orange drift glow
+        # Draw drift trail
+        glPushMatrix()
+        glTranslatef(0, 0.1, 0)
+        glRotatef(90, 1, 0, 0)
+        glutSolidCylinder(0.1, 2.0, 8, 8)
+        glPopMatrix()
+        glDisable(GL_BLEND)
+        glColor3f(0.8, 0.2, 0.2)  # Reset to vehicle color
+    
+    # Draw vehicle body
+    if player_vehicle.type == "cycle":
+        draw_motorcycle()
+    elif player_vehicle.type == "bike":
+        # Rotate bike 180 degrees to make it backward facing from camera POV
+        glRotatef(180, 0, 1, 0)
+        draw_bike()
+    else:
+        draw_car()
+    
+    glPopMatrix()
+
+def draw_car():
+    """Draw a highly detailed and realistic sports car"""
+    # Main body (lower section) - more aerodynamic
+    glColor3f(0.9, 0.1, 0.1)  # Bright red body with metallic sheen
+    glPushMatrix()
+    glTranslatef(0, 0.6, 0)
+    glScalef(2.2, 0.8, 4.2)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Upper body/cabin - sleeker design
+    glPushMatrix()
+    glTranslatef(0, 1.2, -0.3)
+    glScalef(1.8, 1.0, 2.8)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Hood - more curved and aerodynamic
+    glPushMatrix()
+    glTranslatef(0, 0.9, 1.8)
+    glScalef(2.0, 0.25, 1.2)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Front bumper with air intake
+    glColor3f(0.6, 0.1, 0.1)  # Darker red
+    glPushMatrix()
+    glTranslatef(0, 0.4, 2.2)
+    glScalef(2.1, 0.3, 0.4)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Air intake grille
+    glColor3f(0.2, 0.2, 0.2)  # Dark grille
+    glPushMatrix()
+    glTranslatef(0, 0.5, 2.1)
+    glScalef(1.8, 0.2, 0.1)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Trunk - more integrated
+    glColor3f(0.8, 0.15, 0.15)
+    glPushMatrix()
+    glTranslatef(0, 0.9, -2.0)
+    glScalef(2.0, 0.3, 0.8)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Side skirts
+    glColor3f(0.6, 0.1, 0.1)
+    glPushMatrix()
+    glTranslatef(0, 0.3, 0)
+    glScalef(2.3, 0.1, 4.0)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Wheels with much more detail
+    wheel_positions = [
+        (-1.1, 0.4, -1.6), (1.1, 0.4, -1.6),  # Front wheels
+        (-1.1, 0.4, 1.6), (1.1, 0.4, 1.6)     # Rear wheels
+    ]
+    
+    for i, (x, y, z) in enumerate(wheel_positions):
+        # Wheel rim - more detailed
+        glColor3f(0.3, 0.3, 0.3)  # Dark metallic
+        glPushMatrix()
+        glTranslatef(x, y, z)
+        glRotatef(90, 0, 1, 0)
+        glutSolidCylinder(0.5, 0.25, 16, 16)
+        glPopMatrix()
+        
+        # Rim center cap
+        glColor3f(0.8, 0.8, 0.8)  # Silver
+        glPushMatrix()
+        glTranslatef(x, y, z)
+        glRotatef(90, 0, 1, 0)
+        glutSolidCylinder(0.15, 0.26, 8, 8)
+        glPopMatrix()
+        
+        # Tire with tread pattern
+        glColor3f(0.05, 0.05, 0.05)  # Very dark
+        glPushMatrix()
+        glTranslatef(x, y, z)
+        glRotatef(90, 0, 1, 0)
+        glutSolidCylinder(0.65, 0.2, 16, 16)
+        glPopMatrix()
+        
+        # Brake caliper
+        glColor3f(0.8, 0.2, 0.2)  # Red brake
+        glPushMatrix()
+        glTranslatef(x, y, z)
+        glRotatef(90, 0, 1, 0)
+        glutSolidCylinder(0.2, 0.3, 8, 8)
+        glPopMatrix()
+    
+    # Headlights with housing
+    glColor3f(0.1, 0.1, 0.1)  # Dark housing
+    glPushMatrix()
+    glTranslatef(-0.7, 0.8, 2.1)
+    glScalef(0.4, 0.3, 0.2)
+    glutSolidCube(1)
+    glPopMatrix()
+    glPushMatrix()
+    glTranslatef(0.7, 0.8, 2.1)
+    glScalef(0.4, 0.3, 0.2)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Headlight lenses
+    glColor3f(1.0, 1.0, 0.9)  # Bright white
+    glPushMatrix()
+    glTranslatef(-0.7, 0.8, 2.15)
+    glutSolidSphere(0.15, 12, 12)
+    glPopMatrix()
+    glPushMatrix()
+    glTranslatef(0.7, 0.8, 2.15)
+    glutSolidSphere(0.15, 12, 12)
+    glPopMatrix()
+    
+    # Taillights with housing
+    glColor3f(0.1, 0.1, 0.1)  # Dark housing
+    glPushMatrix()
+    glTranslatef(-0.6, 0.8, -2.1)
+    glScalef(0.3, 0.25, 0.15)
+    glutSolidCube(1)
+    glPopMatrix()
+    glPushMatrix()
+    glTranslatef(0.6, 0.8, -2.1)
+    glScalef(0.3, 0.25, 0.15)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Taillight lenses
+    glColor3f(1.0, 0.2, 0.1)  # Bright red
+    glPushMatrix()
+    glTranslatef(-0.6, 0.8, -2.18)
+    glutSolidSphere(0.12, 10, 10)
+    glPopMatrix()
+    glPushMatrix()
+    glTranslatef(0.6, 0.8, -2.18)
+    glutSolidSphere(0.12, 10, 10)
+    glPopMatrix()
+    
+    # Windows with better proportions
+    glColor3f(0.1, 0.15, 0.25)  # Dark blue tint
+    # Front windshield
+    glPushMatrix()
+    glTranslatef(0, 1.6, 0.3)
+    glRotatef(20, 1, 0, 0)
+    glScalef(1.7, 0.05, 1.8)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Rear windshield
+    glPushMatrix()
+    glTranslatef(0, 1.6, -1.2)
+    glRotatef(-20, 1, 0, 0)
+    glScalef(1.7, 0.05, 1.2)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Side windows
+    glPushMatrix()
+    glTranslatef(0, 1.6, -0.5)
+    glScalef(1.7, 0.8, 1.8)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Side mirrors
+    glColor3f(0.8, 0.15, 0.15)
+    glPushMatrix()
+    glTranslatef(-1.2, 1.4, 0.5)
+    glScalef(0.1, 0.3, 0.2)
+    glutSolidCube(1)
+    glPopMatrix()
+    glPushMatrix()
+    glTranslatef(1.2, 1.4, 0.5)
+    glScalef(0.1, 0.3, 0.2)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Exhaust pipes
+    glColor3f(0.4, 0.4, 0.4)  # Metallic
+    glPushMatrix()
+    glTranslatef(-0.4, 0.3, -2.3)
+    glRotatef(90, 0, 1, 0)
+    glutSolidCylinder(0.08, 0.4, 8, 8)
+    glPopMatrix()
+    glPushMatrix()
+    glTranslatef(0.4, 0.3, -2.3)
+    glRotatef(90, 0, 1, 0)
+    glutSolidCylinder(0.08, 0.4, 8, 8)
+    glPopMatrix()
+    
+    # Spoiler
+    glColor3f(0.6, 0.1, 0.1)
+    glPushMatrix()
+    glTranslatef(0, 1.8, -2.0)
+    glScalef(1.5, 0.1, 0.3)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Spoiler supports
+    glPushMatrix()
+    glTranslatef(-0.6, 1.6, -2.0)
+    glScalef(0.05, 0.4, 0.05)
+    glutSolidCube(1)
+    glPopMatrix()
+    glPushMatrix()
+    glTranslatef(0.6, 1.6, -2.0)
+    glScalef(0.05, 0.4, 0.05)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Interior details
+    glColor3f(0.05, 0.05, 0.05)  # Very dark interior
+    # Dashboard
+    glPushMatrix()
+    glTranslatef(0, 1.4, 0.8)
+    glScalef(1.6, 0.1, 0.8)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Steering wheel
+    glColor3f(0.1, 0.1, 0.1)
+    glPushMatrix()
+    glTranslatef(0, 1.3, 0.6)
+    glRotatef(90, 1, 0, 0)
+    glutSolidTorus(0.15, 0.25, 8, 8)
+    glPopMatrix()
+    
+    # Seats
+    glColor3f(0.1, 0.1, 0.1)
+    # Driver seat
+    glPushMatrix()
+    glTranslatef(-0.4, 1.0, 0.2)
+    glScalef(0.6, 0.3, 0.8)
+    glutSolidCube(1)
+    glPopMatrix()
+    # Passenger seat
+    glPushMatrix()
+    glTranslatef(0.4, 1.0, 0.2)
+    glScalef(0.6, 0.3, 0.8)
+    glutSolidCube(1)
+    glPopMatrix()
+
+def draw_bike():
+    """Draw a sleek, modern sport motorcycle"""
+    
+    # Main frame - streamlined and aerodynamic
+    glColor3f(0.0, 0.0, 0.8)  # Vibrant blue main body
+    glPushMatrix()
+    glTranslatef(0, 0.6, 0)
+    glScalef(0.8, 0.3, 2.8)  # Slimmer, more aerodynamic
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Upper fairing - smooth and curved
+    glColor3f(0.0, 0.0, 0.8)  # Blue fairing
+    glPushMatrix()
+    glTranslatef(0, 1.2, 0.4)
+    glScalef(0.9, 0.8, 1.2)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Front fairing - aerodynamic design
+    glColor3f(0.0, 0.0, 0.8)  # Blue front fairing
+    glPushMatrix()
+    glTranslatef(0, 1.4, 0.8)
+    glScalef(0.7, 0.6, 0.8)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Fuel tank - streamlined
+    glColor3f(0.0, 0.0, 0.8)  # Blue fuel tank
+    glPushMatrix()
+    glTranslatef(0, 1.1, -0.2)
+    glScalef(0.8, 0.7, 1.0)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Seat - integrated design
+    glColor3f(0.05, 0.05, 0.05)  # Black seat
+    glPushMatrix()
+    glTranslatef(0, 1.3, -0.8)
+    glScalef(0.7, 0.2, 0.8)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Seat padding
+    glColor3f(0.1, 0.1, 0.1)  # Dark grey padding
+    glPushMatrix()
+    glTranslatef(0, 1.4, -0.8)
+    glScalef(0.6, 0.1, 0.7)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Handlebar - sleek design
+    glColor3f(0.2, 0.2, 0.2)  # Dark handlebar
+    glPushMatrix()
+    glTranslatef(0, 1.6, 0.6)
+    glScalef(1.2, 0.06, 0.06)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Handlebar grips
+    glColor3f(0.05, 0.05, 0.05)  # Black grips
+    glPushMatrix()
+    glTranslatef(-0.6, 1.6, 0.6)
+    glutSolidSphere(0.06, 8, 8)
+    glPopMatrix()
+    glPushMatrix()
+    glTranslatef(0.6, 1.6, 0.6)
+    glutSolidSphere(0.06, 8, 8)
+    glPopMatrix()
+    
+    # Front fork - slim and modern
+    glColor3f(0.4, 0.4, 0.4)  # Metallic fork
+    glPushMatrix()
+    glTranslatef(0, 0.8, 1.0)
+    glScalef(0.08, 1.0, 0.08)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Wheels - modern sport bike style
+    # Front wheel
+    glColor3f(0.1, 0.1, 0.1)  # Dark tire
+    glPushMatrix()
+    glTranslatef(0, 0, 1.0)
+    glRotatef(90, 0, 1, 0)
+    glutSolidCylinder(0.7, 0.15, 16, 16)
+    glPopMatrix()
+    
+    # Front wheel rim - solid disc style
+    glColor3f(0.7, 0.7, 0.7)  # Silver rim
+    glPushMatrix()
+    glTranslatef(0, 0, 1.0)
+    glRotatef(90, 0, 1, 0)
+    glutSolidCylinder(0.55, 0.17, 16, 16)
+    glPopMatrix()
+    
+    # Rear wheel - slightly larger
+    glColor3f(0.1, 0.1, 0.1)  # Dark tire
+    glPushMatrix()
+    glTranslatef(0, 0, -1.0)
+    glRotatef(90, 0, 1, 0)
+    glutSolidCylinder(0.75, 0.18, 16, 16)
+    glPopMatrix()
+    
+    # Rear wheel rim - solid disc style
+    glColor3f(0.7, 0.7, 0.7)  # Silver rim
+    glPushMatrix()
+    glTranslatef(0, 0, -1.0)
+    glRotatef(90, 0, 1, 0)
+    glutSolidCylinder(0.6, 0.2, 16, 16)
+    glPopMatrix()
+    
+    # Exhaust system - sleek and modern
+    glColor3f(0.3, 0.3, 0.3)  # Dark metallic
+    # Main exhaust pipe
+    glPushMatrix()
+    glTranslatef(0.4, 0.4, -0.6)
+    glRotatef(90, 0, 1, 0)
+    glutSolidCylinder(0.06, 1.0, 8, 8)
+    glPopMatrix()
+    
+    # Exhaust muffler
+    glColor3f(0.2, 0.2, 0.2)  # Darker muffler
+    glPushMatrix()
+    glTranslatef(0.4, 0.4, -1.5)
+    glRotatef(90, 0, 1, 0)
+    glutSolidCylinder(0.12, 0.3, 8, 8)
+    glPopMatrix()
+    
+    # Headlight - modern LED style
+    glColor3f(0.05, 0.05, 0.05)  # Dark housing
+    glPushMatrix()
+    glTranslatef(0, 1.3, 1.0)
+    glScalef(0.4, 0.3, 0.2)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Headlight lens
+    glColor3f(1.0, 1.0, 0.9)  # Bright white
+    glPushMatrix()
+    glTranslatef(0, 1.3, 1.1)
+    glutSolidSphere(0.15, 12, 12)
+    glPopMatrix()
+    
+    # Taillight - modern LED style
+    glColor3f(0.05, 0.05, 0.05)  # Dark housing
+    glPushMatrix()
+    glTranslatef(0, 1.0, -1.8)
+    glScalef(0.25, 0.2, 0.15)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Taillight lens
+    glColor3f(1.0, 0.1, 0.1)  # Bright red
+    glPushMatrix()
+    glTranslatef(0, 1.0, -1.9)
+    glutSolidSphere(0.12, 10, 10)
+    glPopMatrix()
+    
+    # Turn signals - modern LED style
+    glColor3f(1.0, 0.6, 0.0)  # Amber
+    # Front left
+    glPushMatrix()
+    glTranslatef(-0.5, 1.2, 1.0)
+    glutSolidSphere(0.06, 8, 8)
+    glPopMatrix()
+    # Front right
+    glPushMatrix()
+    glTranslatef(0.5, 1.2, 1.0)
+    glutSolidSphere(0.06, 8, 8)
+    glPopMatrix()
+    # Rear left
+    glPushMatrix()
+    glTranslatef(-0.3, 0.9, -1.6)
+    glutSolidSphere(0.06, 8, 8)
+    glPopMatrix()
+    # Rear right
+    glPushMatrix()
+    glTranslatef(0.3, 0.9, -1.6)
+    glutSolidSphere(0.06, 8, 8)
+    glPopMatrix()
+    
+    # Rider - realistic proportions
+    glColor3f(0.8, 0.6, 0.5)  # Skin tone
+    # Helmet
+    glPushMatrix()
+    glTranslatef(0, 2.1, -0.6)
+    glutSolidSphere(0.2, 12, 12)
+    glPopMatrix()
+    
+    # Helmet visor
+    glColor3f(0.1, 0.1, 0.2)  # Dark visor
+    glPushMatrix()
+    glTranslatef(0, 2.1, -0.8)
+    glRotatef(20, 1, 0, 0)
+    glScalef(0.15, 0.04, 0.12)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Helmet body
+    glColor3f(0.0, 0.0, 0.8)  # Blue helmet
+    glPushMatrix()
+    glTranslatef(0, 2.1, -0.6)
+    glutSolidSphere(0.2, 12, 12)
+    glPopMatrix()
+    
+    # Body - racing suit
+    glColor3f(0.05, 0.05, 0.05)  # Black suit
+    glPushMatrix()
+    glTranslatef(0, 1.7, -0.3)
+    glScalef(0.6, 1.1, 0.6)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Racing suit accents
+    glColor3f(0.0, 0.0, 0.8)  # Blue accents
+    glPushMatrix()
+    glTranslatef(0, 1.7, -0.3)
+    glScalef(0.6, 0.08, 0.6)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Arms - realistic positioning
+    glColor3f(0.05, 0.05, 0.05)
+    # Left arm
+    glPushMatrix()
+    glTranslatef(-0.35, 1.5, -0.6)
+    glRotatef(40, 0, 0, 1)
+    glScalef(0.15, 0.5, 0.15)
+    glutSolidCube(1)
+    glPopMatrix()
+    # Right arm
+    glPushMatrix()
+    glTranslatef(0.35, 1.5, -0.6)
+    glRotatef(-40, 0, 0, 1)
+    glScalef(0.15, 0.5, 0.15)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Legs - realistic positioning
+    glColor3f(0.05, 0.05, 0.05)
+    # Left leg
+    glPushMatrix()
+    glTranslatef(-0.15, 1.0, 0.1)
+    glScalef(0.2, 0.7, 0.2)
+    glutSolidCube(1)
+    glPopMatrix()
+    # Right leg
+    glPushMatrix()
+    glTranslatef(0.15, 1.0, 0.1)
+    glScalef(0.2, 0.7, 0.2)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Foot pegs
+    glColor3f(0.4, 0.4, 0.4)  # Metallic
+    glPushMatrix()
+    glTranslatef(-0.25, 0.2, -0.6)
+    glScalef(0.08, 0.08, 0.25)
+    glutSolidCube(1)
+    glPopMatrix()
+    glPushMatrix()
+    glTranslatef(0.25, 0.2, -0.6)
+    glScalef(0.08, 0.08, 0.25)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Instrument cluster - modern digital style
+    glColor3f(0.05, 0.05, 0.05)  # Dark housing
+    glPushMatrix()
+    glTranslatef(0, 1.5, -1.0)
+    glScalef(0.35, 0.15, 0.08)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Speedometer display
+    glColor3f(0.0, 0.8, 0.0)  # Green digital display
+    glPushMatrix()
+    glTranslatef(0, 1.5, -0.96)
+    glScalef(0.25, 0.1, 0.01)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Side panels - sleek design
+    glColor3f(0.05, 0.05, 0.05)  # Black side panels
+    glPushMatrix()
+    glTranslatef(0, 0.4, 0)
+    glScalef(0.9, 0.2, 2.5)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Engine cover - streamlined
+    glColor3f(0.3, 0.3, 0.4)  # Metallic engine cover
+    glPushMatrix()
+    glTranslatef(0, 0.5, 0)
+    glScalef(0.7, 0.4, 1.5)
+    glutSolidCube(1)
+    glPopMatrix()
+
+def draw_motorcycle():
+    """Draw a highly detailed and realistic racing bicycle"""
+    # Main frame (diamond shape) - more realistic proportions and better wheel alignment
+    glColor3f(1.0, 0.7, 0.0)  # Bright gold frame with metallic sheen
+    # Top tube - connects head tube to seat tube
+    glPushMatrix()
+    glTranslatef(0, 1.3, 0)
+    glRotatef(-25, 1, 0, 0)
+    glScalef(0.08, 0.08, 1.6)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Down tube - connects head tube to bottom bracket
+    glPushMatrix()
+    glTranslatef(0, 0.7, 0)
+    glRotatef(35, 1, 0, 0)
+    glScalef(0.08, 0.08, 1.6)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Seat tube - connects seat to bottom bracket
+    glPushMatrix()
+    glTranslatef(0, 0.4, -0.9)
+    glScalef(0.08, 1.1, 0.08)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Head tube - connects top tube and down tube to front fork
+    glPushMatrix()
+    glTranslatef(0, 1.1, 0.9)
+    glScalef(0.08, 0.9, 0.08)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Chain stays - connect bottom bracket to rear wheel
+    glPushMatrix()
+    glTranslatef(0, 0.3, -0.7)
+    glScalef(0.06, 0.06, 0.8)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Seat tube support - additional bracing
+    glPushMatrix()
+    glTranslatef(0, 0.6, -0.8)
+    glRotatef(-15, 1, 0, 0)
+    glScalef(0.06, 0.06, 0.4)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Bottom bracket - connects down tube, seat tube, and chain stays
+    glColor3f(0.8, 0.5, 0.0)  # Darker gold
+    glPushMatrix()
+    glTranslatef(0, 0.3, -0.9)
+    glScalef(0.12, 0.12, 0.12)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Seat - more comfortable looking
+    glColor3f(0.05, 0.05, 0.05)  # Very dark
+    glPushMatrix()
+    glTranslatef(0, 1.1, -0.9)
+    glScalef(0.25, 0.08, 0.35)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Seat padding
+    glColor3f(0.1, 0.1, 0.1)
+    glPushMatrix()
+    glTranslatef(0, 1.15, -0.9)
+    glScalef(0.2, 0.03, 0.3)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Handlebar with more detail
+    glColor3f(0.4, 0.4, 0.4)  # Metallic
+    glPushMatrix()
+    glTranslatef(0, 1.5, 0.9)
+    glScalef(0.9, 0.08, 0.08)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Handlebar grips
+    glColor3f(0.1, 0.1, 0.1)  # Black grips
+    glPushMatrix()
+    glTranslatef(-0.4, 1.5, 0.9)
+    glutSolidSphere(0.06, 8, 8)
+    glPopMatrix()
+    glPushMatrix()
+    glTranslatef(0.4, 1.5, 0.9)
+    glutSolidSphere(0.06, 8, 8)
+    glPopMatrix()
+    
+    # Front fork
+    glColor3f(0.4, 0.4, 0.4)  # Metallic
+    glPushMatrix()
+    glTranslatef(0, 0.8, 1.0)  # Aligned with front wheel position
+    glScalef(0.06, 0.8, 0.06)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Simple wheels - back to working version
+    # Front wheel
+    glColor3f(0.1, 0.1, 0.1)  # Dark tire
+    glPushMatrix()
+    glTranslatef(0, 0, 1.0)
+    glRotatef(90, 0, 1, 0)
+    glutSolidCylinder(0.6, 0.1, 16, 16)
+    glPopMatrix()
+    
+    # Front wheel rim
+    glColor3f(0.8, 0.8, 0.8)  # Silver rim
+    glPushMatrix()
+    glTranslatef(0, 0, 1.0)
+    glRotatef(90, 0, 1, 0)
+    glutSolidCylinder(0.5, 0.12, 16, 16)
+    glPopMatrix()
+    
+    # Rear wheel
+    glColor3f(0.1, 0.1, 0.1)  # Dark tire
+    glPushMatrix()
+    glTranslatef(0, 0, -0.9)
+    glRotatef(90, 0, 1, 0)
+    glutSolidCylinder(0.6, 0.1, 16, 16)
+    glPopMatrix()
+    
+    # Rear wheel rim
+    glColor3f(0.8, 0.8, 0.8)  # Silver rim
+    glPushMatrix()
+    glTranslatef(0, 0, -0.9)
+    glRotatef(90, 0, 1, 0)
+    glutSolidCylinder(0.5, 0.12, 16, 16)
+    glPopMatrix()
+    
+    # Pedals with more detail
+    glColor3f(0.4, 0.4, 0.4)  # Metallic
+    glPushMatrix()
+    glTranslatef(0, 0.25, -0.9)
+    glScalef(0.35, 0.08, 0.12)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Pedal arms
+    glColor3f(0.3, 0.3, 0.3)  # Darker
+    glPushMatrix()
+    glTranslatef(0, 0.4, -0.9)
+    glScalef(0.06, 0.3, 0.06)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Chainring
+    glColor3f(0.4, 0.4, 0.4)  # Metallic
+    glPushMatrix()
+    glTranslatef(0, 0.3, -0.9)
+    glRotatef(90, 0, 1, 0)
+    glutSolidCylinder(0.25, 0.04, 16, 16)
+    glPopMatrix()
+    
+    # Chainring teeth
+    glColor3f(0.3, 0.3, 0.3)  # Darker
+    for angle in range(0, 360, 20):
+        glPushMatrix()
+        glTranslatef(0, 0.3, -0.9)
+        glRotatef(angle, 0, 1, 0)
+        glTranslatef(0.25, 0, 0)
+        glRotatef(90, 0, 1, 0)
+        glutSolidCylinder(0.02, 0.05, 4, 4)
+        glPopMatrix()
+    
+    # Brake system
+    glColor3f(0.2, 0.2, 0.2)  # Dark
+    # Front brake
+    glPushMatrix()
+    glTranslatef(0, 0.4, 1.0)  # Aligned with front wheel position
+    glScalef(0.15, 0.1, 0.05)
+    glutSolidCube(1)
+    glPopMatrix()
+    # Rear brake
+    glPushMatrix()
+    glTranslatef(0, 0.4, -0.9)  # Aligned with rear wheel position
+    glScalef(0.15, 0.1, 0.05)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Gear shifters
+    glColor3f(0.3, 0.3, 0.3)
+    glPushMatrix()
+    glTranslatef(-0.3, 1.4, 0.9)
+    glutSolidSphere(0.04, 8, 8)
+    glPopMatrix()
+    glPushMatrix()
+    glTranslatef(0.3, 1.4, 0.9)
+    glutSolidSphere(0.04, 8, 8)
+    glPopMatrix()
+    
+    # Rider with much more detail
+    glColor3f(0.8, 0.6, 0.5)  # Skin tone
+    # Head
+    glPushMatrix()
+    glTranslatef(0, 1.9, 0.4)
+    glutSolidSphere(0.18, 16, 16)
+    glPopMatrix()
+    
+    # Helmet
+    glColor3f(0.1, 0.1, 0.1)  # Black helmet
+    glPushMatrix()
+    glTranslatef(0, 2.0, 0.4)
+    glutSolidSphere(0.2, 16, 16)
+    glPopMatrix()
+    
+    # Helmet visor
+    glColor3f(0.1, 0.15, 0.25)  # Dark blue tint
+    glPushMatrix()
+    glTranslatef(0, 2.0, 0.55)
+    glRotatef(-15, 1, 0, 0)
+    glScalef(0.15, 0.02, 0.1)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Body - racing jersey
+    glColor3f(0.8, 0.2, 0.2)  # Red jersey
+    glPushMatrix()
+    glTranslatef(0, 1.5, 0.2)
+    glScalef(0.5, 0.9, 0.3)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Jersey details
+    glColor3f(0.1, 0.1, 0.1)  # Black accents
+    glPushMatrix()
+    glTranslatef(0, 1.5, 0.2)
+    glScalef(0.5, 0.05, 0.3)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Shorts
+    glColor3f(0.0, 0.0, 0.6)  # Dark blue shorts
+    glPushMatrix()
+    glTranslatef(0, 1.1, -0.1)
+    glScalef(0.45, 0.4, 0.25)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Shorts details
+    glColor3f(0.1, 0.1, 0.1)  # Black accents
+    glPushMatrix()
+    glTranslatef(0, 1.1, -0.1)
+    glScalef(0.45, 0.05, 0.25)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Arms
+    glColor3f(0.8, 0.6, 0.5)  # Skin tone
+    # Left arm
+    glPushMatrix()
+    glTranslatef(-0.3, 1.4, 0.3)
+    glRotatef(-30, 0, 0, 1)
+    glScalef(0.15, 0.5, 0.15)
+    glutSolidCube(1)
+    glPopMatrix()
+    # Right arm
+    glPushMatrix()
+    glTranslatef(0.3, 1.4, 0.3)
+    glRotatef(30, 0, 0, 1)
+    glScalef(0.15, 0.5, 0.15)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Legs
+    glColor3f(0.8, 0.6, 0.5)  # Skin tone
+    # Left leg
+    glPushMatrix()
+    glTranslatef(-0.15, 1.0, -0.2)
+    glScalef(0.18, 0.7, 0.18)
+    glutSolidCube(1)
+    glPopMatrix()
+    # Right leg
+    glPushMatrix()
+    glTranslatef(0.15, 1.0, -0.2)
+    glScalef(0.18, 0.7, 0.18)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Cycling shoes
+    glColor3f(0.1, 0.1, 0.1)  # Black shoes
+    glPushMatrix()
+    glTranslatef(-0.15, 0.25, -0.9)
+    glScalef(0.12, 0.08, 0.25)
+    glutSolidCube(1)
+    glPopMatrix()
+    glPushMatrix()
+    glTranslatef(0.15, 0.25, -0.9)
+    glScalef(0.12, 0.08, 0.25)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Water bottle
+    glColor3f(0.0, 0.6, 0.8)  # Blue bottle
+    glPushMatrix()
+    glTranslatef(0.4, 1.0, -0.3)
+    glRotatef(90, 0, 1, 0)
+    glutSolidCylinder(0.08, 0.3, 8, 8)
+    glPopMatrix()
+    
+    # Bottle cage
+    glColor3f(0.4, 0.4, 0.4)  # Metallic
+    glPushMatrix()
+    glTranslatef(0.4, 1.0, -0.3)
+    glScalef(0.15, 0.1, 0.35)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Add some final details
+    # Water bottle cap
+    glColor3f(0.2, 0.2, 0.2)  # Dark cap
+    glPushMatrix()
+    glTranslatef(0.4, 1.0, -0.3)
+    glutSolidSphere(0.08, 8, 8)
+    glPopMatrix()
+    
+    # Frame decals
+    glColor3f(0.8, 0.5, 0.0)  # Lighter gold
+    glPushMatrix()
+    glTranslatef(0, 1.0, 0)
+    glScalef(0.1, 0.05, 0.8)
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Racing number
+    glColor3f(1.0, 1.0, 1.0)  # White
+    glPushMatrix()
+    glTranslatef(0, 1.2, 0.2)
+    glScalef(0.3, 0.1, 0.1)
+    glutSolidCube(1)
+    glPopMatrix()
+
+def draw_obstacles():
+    """Draw all obstacles"""
+    for obstacle in obstacles:
+        if obstacle.collected:
+            continue
+        
+
+        
+        glPushMatrix()
+        glTranslatef(obstacle.x, obstacle.y, obstacle.z)
+        glRotatef(obstacle.rotation, 0, 1, 0)
+        
+        glColor3f(0.8, 0.4, 0.2)  # Brown color
+        
+        if obstacle.type == "box":
+            glScalef(obstacle.size[0], obstacle.size[1], obstacle.size[2])
+            glutSolidCube(1)
+        else:  # cylinder
+            glRotatef(90, 1, 0, 0)
+            glutSolidCylinder(obstacle.size[0]/2, obstacle.size[2], 8, 8)
+        
+        glPopMatrix()
+
+def draw_powerups():
+    """Draw all powerups with realistic icons and hovering animations"""
+    for powerup in powerups:
+        if powerup.collected:
+            continue
+        
+
+        
+        glPushMatrix()
+        glTranslatef(powerup.x, powerup.y, powerup.z)
+        glRotatef(powerup.rotation, 0, 1, 0)
+        glScalef(powerup.scale, powerup.scale, powerup.scale)
+        
+        if powerup.type == "speed":
+            # Lightning bolt powerup
+            glColor3f(1.0, 1.0, 0.0)  # Bright yellow
+            
+            # Draw lightning bolt using multiple cubes
+            # Main bolt body
+            glPushMatrix()
+            glTranslatef(0, 0, 0)
+            glRotatef(45, 0, 0, 1)
+            glScalef(0.1, 0.8, 0.1)
+            glutSolidCube(1)
+            glPopMatrix()
+            
+            # Top branch
+            glPushMatrix()
+            glTranslatef(-0.2, 0.3, 0)
+            glRotatef(-30, 0, 0, 1)
+            glScalef(0.1, 0.4, 0.1)
+            glutSolidCube(1)
+            glPopMatrix()
+            
+            # Bottom branch
+            glPushMatrix()
+            glTranslatef(0.2, -0.3, 0)
+            glRotatef(30, 0, 0, 1)
+            glScalef(0.1, 0.4, 0.1)
+            glutSolidCube(1)
+            glPopMatrix()
+            
+            # Add lightning glow effect
+            glEnable(GL_BLEND)
+            glColor4f(1.0, 1.0, 0.0, 0.4)
+            glPushMatrix()
+            glTranslatef(0, 0, 0)
+            glutSolidSphere(0.8, 8, 8)
+            glPopMatrix()
+            glDisable(GL_BLEND)
+            
+        else:  # shield
+            # Shield powerup
+            glColor3f(0.0, 0.8, 1.0)  # Bright blue
+            
+            # Draw shield using curved shape (approximated with cubes)
+            # Main shield body
+            glPushMatrix()
+            glTranslatef(0, 0, 0)
+            glScalef(0.6, 0.8, 0.1)
+            glutSolidCube(1)
+            glPopMatrix()
+            
+            # Shield top curve
+            glPushMatrix()
+            glTranslatef(0, 0.4, 0)
+            glScalef(0.4, 0.2, 0.1)
+            glutSolidCube(1)
+            glPopMatrix()
+            
+            # Shield handle
+            glColor3f(0.8, 0.6, 0.2)  # Gold handle
+            glPushMatrix()
+            glTranslatef(0, -0.2, 0)
+            glScalef(0.1, 0.3, 0.1)
+            glutSolidCube(1)
+            glPopMatrix()
+            
+            # Shield cross
+            glColor3f(1.0, 1.0, 1.0)  # White cross
+            glPushMatrix()
+            glTranslatef(0, 0, 0.06)
+            glScalef(0.1, 0.4, 0.02)
+            glutSolidCube(1)
+            glPopMatrix()
+            glPushMatrix()
+            glTranslatef(0, 0, 0.06)
+            glScalef(0.4, 0.1, 0.02)
+            glutSolidCube(1)
+            glPopMatrix()
+            
+            # Add shield glow effect
+            glEnable(GL_BLEND)
+            glColor4f(0.0, 0.8, 1.0, 0.3)
+            glPushMatrix()
+            glTranslatef(0, 0, 0)
+            glutSolidSphere(0.8, 8, 8)
+            glPopMatrix()
+            glDisable(GL_BLEND)
+        
+        glPopMatrix()
+
+def draw_game_hud():
+    """Draw game-specific HUD elements"""
+    glDisable(GL_LIGHTING)
+    glDisable(GL_DEPTH_TEST)
+    
+    glMatrixMode(GL_PROJECTION)
+    glPushMatrix()
+    glLoadIdentity()
+    glOrtho(0, WINDOW_WIDTH, 0, WINDOW_HEIGHT, -1, 1)
+    
+    glMatrixMode(GL_MODELVIEW)
+    glPushMatrix()
+    glLoadIdentity()
+    
+    # Game info panel
+    glEnable(GL_BLEND)
+    glColor4f(0, 0, 0, 0.7)
+    glBegin(GL_QUADS)
+    glVertex2f(10, WINDOW_HEIGHT - 150)
+    glVertex2f(350, WINDOW_HEIGHT - 150)
+    glVertex2f(350, WINDOW_HEIGHT - 10)
+    glVertex2f(10, WINDOW_HEIGHT - 10)
+    glEnd()
+    
+    # Game info
+    glColor3f(1, 1, 1)
+    
+    # Game state
+    state_text = f"Game: {game_state.upper()}"
+    glRasterPos2f(20, WINDOW_HEIGHT - 30)
+    for char in state_text:
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
+    
+    # Lives
+    lives_text = f"Lives: {lives}"
+    glRasterPos2f(20, WINDOW_HEIGHT - 55)
+    for char in lives_text:
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
+    
+    # Score
+    score_text = f"Score: {score}"
+    glRasterPos2f(20, WINDOW_HEIGHT - 80)
+    for char in score_text:
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
+    
+    # Game time
+    time_text = f"Time: {game_time:.1f}s"
+    glRasterPos2f(20, WINDOW_HEIGHT - 105)
+    for char in time_text:
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
+    
+    # Vehicle type
+    vehicle_text = f"Vehicle: {player_vehicle.type.title()}"
+    glRasterPos2f(20, WINDOW_HEIGHT - 130)
+    for char in vehicle_text:
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
+    
+    # Rotation restriction indicator
+    if player_vehicle.z > ROAD_START + 5:  # Vehicle has crossed start line
+        glColor3f(0.8, 0.6, 0.0)  # Orange color for restriction notice
+        restriction_text = "Rotation Restricted: Forward Only"
+        glRasterPos2f(20, WINDOW_HEIGHT - 155)
+        for char in restriction_text:
+            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
+    
+    # Reset color for other elements
+    glColor3f(1, 1, 1)
+    
+    # Powerup status
+    if has_shield:
+        shield_text = "Shield: ACTIVE"
+        glColor3f(0, 1, 1)
+        glRasterPos2f(20, WINDOW_HEIGHT - 155)
+        for char in shield_text:
+            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
+    
+    if speed_boost_active:
+        boost_text = f"Speed Boost: {speed_boost_timer:.1f}s"
+        glColor3f(1, 1, 0)
+        glRasterPos2f(200, WINDOW_HEIGHT - 155)
+        for char in boost_text:
+            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
+    
+    # Road boundary warning
+    if game_state == "playing":
+        road_left_edge = -ROAD_WIDTH / 2
+        road_right_edge = ROAD_WIDTH / 2
+        distance_to_left = player_vehicle.x - road_left_edge
+        distance_to_right = road_right_edge - player_vehicle.x
+        
+        # Warning when close to edges (within 3 units)
+        if distance_to_left < 3.0 or distance_to_right < 3.0:
+            warning_color = [1.0, 0.0, 0.0] if min(distance_to_left, distance_to_right) < 1.5 else [1.0, 1.0, 0.0]
+            glColor3f(*warning_color)
+            
+            if distance_to_left < distance_to_right:
+                warning_text = f"LEFT EDGE WARNING: {distance_to_left:.1f}m"
+                glRasterPos2f(350, WINDOW_HEIGHT - 155)
+            else:
+                warning_text = f"RIGHT EDGE WARNING: {distance_to_right:.1f}m"
+                glRasterPos2f(350, WINDOW_HEIGHT - 155)
+            
+            for char in warning_text:
+                glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
+        
+        # Warning when close to start line (trying to go backwards)
+        distance_to_start = player_vehicle.z - (ROAD_START + 5)
+        if distance_to_start < 3.0:
+            warning_color = [1.0, 0.0, 0.0] if distance_to_start < 1.5 else [1.0, 1.0, 0.0]
+            glColor3f(*warning_color)
+            warning_text = f"START LINE WARNING: {distance_to_start:.1f}m"
+            glRasterPos2f(350, WINDOW_HEIGHT - 175)
+            for char in warning_text:
+                glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
+    
+    # Game over screen
+    if game_state == "game_over":
+        glColor4f(0, 0, 0, 0.8)
+        glBegin(GL_QUADS)
+        glVertex2f(WINDOW_WIDTH/2 - 200, WINDOW_HEIGHT/2 - 100)
+        glVertex2f(WINDOW_WIDTH/2 + 200, WINDOW_HEIGHT/2 - 100)
+        glVertex2f(WINDOW_WIDTH/2 + 200, WINDOW_HEIGHT/2 + 100)
+        glVertex2f(WINDOW_WIDTH/2 - 200, WINDOW_HEIGHT/2 + 100)
+        glEnd()
+        
+        glColor3f(1, 1, 1)
+        if lives <= 0:
+            game_over_text = "GAME OVER"
+            glRasterPos2f(WINDOW_WIDTH/2 - 80, WINDOW_HEIGHT/2 + 20)
+            for char in game_over_text:
+                glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
+            
+            restart_text = "Press SPACE to restart"
+            glRasterPos2f(WINDOW_WIDTH/2 - 100, WINDOW_HEIGHT/2 - 20)
+            for char in restart_text:
+                glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
+        else:
+            finish_text = "FINISHED!"
+            glRasterPos2f(WINDOW_WIDTH/2 - 60, WINDOW_HEIGHT/2 + 20)
+            for char in finish_text:
+                glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
+            
+            restart_text = "Press SPACE to restart"
+            glRasterPos2f(WINDOW_WIDTH/2 - 100, WINDOW_HEIGHT/2 - 20)
+            for char in restart_text:
+                glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
+    
+    # Controls panel
+    glColor4f(0, 0, 0, 0.5)
+    glBegin(GL_QUADS)
+    glVertex2f(10, 10)
+    glVertex2f(800, 10)
+    glVertex2f(800, 70)
+    glVertex2f(10, 70)
+    glEnd()
+    
+    # Controls
+    glColor3f(1, 1, 1)
+    controls = "W or Up: Forward | S or Down: Brake (slow down) | A/D or Left/Right: Turn | 1-3: Change Vehicle | SPACE: Restart | C: Camera | ESC: Exit"
+    glRasterPos2f(15, 25)
+    for char in controls:
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, ord(char))
+    
+    vehicle_controls = "Vehicle Types: 1=Cycle (fast turning), 2=Bike (balanced), 3=Car (high speed)"
+    glRasterPos2f(15, 45)
+    for char in vehicle_controls:
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, ord(char))
+    
+    glPopMatrix()
+    glMatrixMode(GL_PROJECTION)
+    glPopMatrix()
+    glMatrixMode(GL_MODELVIEW)
+    
+    glEnable(GL_DEPTH_TEST)
+    glEnable(GL_LIGHTING)
 
 def display():
     """Main display function"""
@@ -992,8 +3091,16 @@ def display():
     draw_trees()
     draw_clouds()
     draw_rain()
+    
+    # Draw game objects
+    draw_obstacles()
+    draw_powerups()
+    draw_player_vehicle()
+    
+    # Draw UI elements
     draw_road_map()
     draw_hud()
+    draw_game_hud()
     
     update_environment()
     
@@ -1001,17 +3108,45 @@ def display():
 
 def keyboard(key, x, y):
     """Handle keyboard input"""
-    global weather_mode, time_of_day, auto_time, use_fog
+    global weather_mode, time_of_day, auto_time, use_fog, game_state, player_vehicle, lives, score, game_time
     
-    if key == b'1':  # Night
-        time_of_day = 0.0
-        auto_time = False
-    elif key == b'2':  # Dawn
-        time_of_day = 0.25
-        auto_time = False
-    elif key == b'3':  # Day
-        time_of_day = 0.5
-        auto_time = False
+    if key == b'1':  # Change to cycle
+        if game_state == "playing":
+            player_vehicle = Vehicle("cycle")
+            print("Switched to Cycle - Fast turning, lower speed")
+    elif key == b'2':  # Change to bike
+        if game_state == "playing":
+            player_vehicle = Vehicle("bike")
+            print("Switched to Bike - Balanced performance")
+    elif key == b'3':  # Change to car
+        if game_state == "playing":
+            player_vehicle = Vehicle("car")
+            print("Switched to Car - High speed, slower turning")
+    elif key == b' ':  # Space bar - restart game
+        if game_state == "game_over":
+            game_state = "playing"
+            lives = 3
+            score = 0
+            game_time = 0.0
+            player_vehicle.reset_position()
+            obstacles.clear()
+            powerups.clear()
+            has_shield = False
+            speed_boost_active = False
+            speed_boost_timer = 0.0
+            
+            # Reset camera position
+            global current_camera_x, current_camera_y, current_camera_z
+            current_camera_x = 0.0
+            current_camera_y = 30.0
+            current_camera_z = 60.0
+            
+            # Reset boundary feedback
+            global boundary_hit_timer, boundary_hit_intensity
+            boundary_hit_timer = 0.0
+            boundary_hit_intensity = 0.0
+            
+            print("Game restarted!")
     elif key == b'4':  # Dusk
         time_of_day = 0.75
         auto_time = False
@@ -1026,8 +3161,22 @@ def keyboard(key, x, y):
     elif key == b'f' or key == b'F':  # Toggle fog
         use_fog = not use_fog
         print(f"Fog: {'ON' if use_fog else 'OFF'}")
+    elif key == b'c' or key == b'C':  # Toggle camera follow
+        global camera_follow_vehicle
+        camera_follow_vehicle = not camera_follow_vehicle
+        print(f"Camera Follow: {'ON' if camera_follow_vehicle else 'OFF'}")
     elif key == b'\x1b':  # ESC
         sys.exit(0)
+    
+    # Store key press for vehicle movement
+    keys_pressed[key] = True
+    
+
+
+def keyboard_up(key, x, y):
+    """Handle key release"""
+    if key in keys_pressed:
+        del keys_pressed[key]
 
 def special_keys(key, x, y):
     """Handle special keys (from template)"""
@@ -1050,6 +3199,14 @@ def special_keys(key, x, y):
         if radius > 0:
             camera_pos[0] = radius * math.sin(math.radians(camera_angle))
             camera_pos[2] = radius * math.cos(math.radians(camera_angle))
+    
+    # Store special key press for vehicle movement
+    keys_pressed[key] = True
+
+def special_keys_up(key, x, y):
+    """Handle special key release"""
+    if key in keys_pressed:
+        del keys_pressed[key]
 
 def timer(value):
     """Timer for consistent frame rate"""
@@ -1062,50 +3219,53 @@ def main():
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH)
     glutInitWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT)
     glutInitWindowPosition(100, 100)
-    glutCreateWindow(b"Racing Game Environment - Fixed Length Track")
+    glutCreateWindow(b"3D Racing Game - Complete Edition")
     
     init_scene()
     
     glutDisplayFunc(display)
     glutKeyboardFunc(keyboard)
+    glutKeyboardUpFunc(keyboard_up)
     glutSpecialFunc(special_keys)
+    glutSpecialUpFunc(special_keys_up)
     glutTimerFunc(0, timer, 0)
     
-    print("=" * 60)
-    print("RACING GAME ENVIRONMENT - FIXED LENGTH TRACK")
-    print("=" * 60)
-    print("TRACK INFO:")
-    print(f"  Road Length: {ROAD_END - ROAD_START} units")
-    print(f"  Start Position: {ROAD_START}")
-    print(f"  Finish Position: {ROAD_END}")
+    print("=" * 70)
+    print("3D RACING GAME - COMPLETE EDITION")
+    print("=" * 70)
+    print("GAME FEATURES:")
+    print("  ✓ Player Vehicle Movement (W/S or Up/Down, A/D or Left/Right)")
+    print("  ✓ Multiple Vehicle Types (Cycle, Bike, Car)")
+    print("  ✓ Random Obstacles (Boxes, Cylinders)")
+    print("  ✓ Powerups (Speed Boost & Shield)")
+    print("  ✓ Collision Detection (AABB method)")
+    print("  ✓ Game Over Conditions")
+    print("  ✓ Enhanced Vehicle Physics (Momentum, Drift, Suspension)")
+    print("\nVEHICLE CONTROLS:")
+    print("  1: Cycle - Fast turning, light & nimble (max 4.0)")
+    print("  2: Bike - Balanced performance (max 5.5)")
+    print("  3: Car - High speed, slower turning (max 7.0)")
+    print("  W or Up: Forward (gradual acceleration)")
+    print("  S or Down: Brake (slow down, no reverse)")
+    print("  A/D or Left/Right: Turn")
+
+    print("  SPACE: Restart game")
     print("\nENVIRONMENT CONTROLS:")
-    print("  1-4: Set Time Phase")
-    print("    1: Night (moonlight, street lights on)")
-    print("    2: Dawn (sunrise colors)")
-    print("    3: Day (bright sunlight)")
-    print("    4: Dusk (sunset colors)")
-    print("  R: Cycle Weather (Clear -> Rain -> Heavy Rain)")
-    print("  T: Toggle Auto Time (day/night cycle)")
-    print("  F: Toggle Extra Fog")
-    print("  Arrow Keys: Rotate/Move Camera")
-    print("\nFEATURES:")
-    print("  - Fixed-length straight road (not infinite)")
-    print("  - Green START line and checkered FINISH line")
-    print("  - Lamp posts beside road with colored markers at start/finish")
-    print("  - Buildings beside road with proper spacing")
-    print("  - Trees between and beyond buildings")
-    print("  - Dynamic weather with rain particles")
-    print("  - Day/night cycle with proper lighting")
-    print("  - Street lights auto-on at night/rain")
-    print("  - Track map showing the complete road")
-    print("  - Wet road effects during rain")
-    print("  - Full sky dome with proper color transitions")
-    print("  - Stars at night and sun/moon with glow effects")
+    print("  4: Set Time Phase")
+    print("  R: Cycle Weather")
+    print("  T: Toggle Auto Time")
+    print("  F: Toggle Fog")
+    print("  Arrow Keys: Camera movement (when not following)")
+    print("  C: Toggle camera follow mode")
+    print("\nGAME OBJECTIVES:")
+    print("  - Reach the finish line without losing all lives")
+    print("  - Avoid obstacles (use shield powerup for protection)")
+    print("  - Collect powerups for advantages")
+    print("  - Don't fall off the road!")
     print("\nESC: Exit")
-    print("=" * 60)
+    print("=" * 70)
     
     glutMainLoop()
 
 if __name__ == "__main__":
     main()
-import sys
