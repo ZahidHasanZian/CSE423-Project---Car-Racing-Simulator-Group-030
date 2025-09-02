@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-3D Racing Game Environment with Rain, Day/Night Cycle, and Road Map
-Environment and scenery setup only - no car mechanics
+3D Racing Game Environment with Fixed-Length Straight Track
+Lamp posts and buildings positioned beside the road
 """
 
 from OpenGL.GL import *
@@ -10,25 +10,26 @@ from OpenGL.GLU import *
 import math
 import random
 import time
+import sys
 
 # Window constants
 WINDOW_WIDTH = 1000
 WINDOW_HEIGHT = 800
 
 # Camera variables (from template)
-camera_pos = [0, 20, 40]
+camera_pos = [0, 30, 60]  # Raised and moved back for better view
 camera_look = [0, 0, 0]
 fovY = 60
 camera_angle = 0
 
 # Road configuration
 ROAD_WIDTH = 20
+ROAD_LENGTH = 2000  # Total road length (fixed) - increased from 500
+ROAD_START = -1000  # Road starts here - extended from -250
+ROAD_END = 1000     # Road ends here - extended from 250
 road_segments = []
-road_curves = []  # Define the actual road path
 
 # Environment variables
-environment_offset = 0
-scroll_speed = 0.5  # Environment scrolling speed
 trees = []
 buildings = []
 street_lights = []
@@ -75,116 +76,117 @@ def init_scene():
     setup_lighting()
 
 def init_road_layout():
-    """Initialize the road path - creates a racing circuit"""
-    global road_segments, road_curves
+    """Initialize fixed-length straight road segments"""
+    global road_segments
     
-    # Create a racing circuit with curves and straights
     road_segments = []
-    road_curves = []
+    segment_length = 40
     
-    # Define road path points for a circuit
-    circuit_points = [
-        # Start/finish straight
-        {'x': 0, 'z': 0, 'type': 'straight'},
-        {'x': 0, 'z': -100, 'type': 'straight'},
-        # First turn
-        {'x': 30, 'z': -150, 'type': 'curve'},
-        {'x': 60, 'z': -180, 'type': 'curve'},
-        {'x': 100, 'z': -180, 'type': 'straight'},
-        # Back straight
-        {'x': 200, 'z': -180, 'type': 'straight'},
-        # Second turn
-        {'x': 250, 'z': -150, 'type': 'curve'},
-        {'x': 280, 'z': -100, 'type': 'curve'},
-        {'x': 280, 'z': 0, 'type': 'straight'},
-        # Third turn
-        {'x': 250, 'z': 50, 'type': 'curve'},
-        {'x': 200, 'z': 80, 'type': 'curve'},
-        {'x': 100, 'z': 80, 'type': 'straight'},
-        # Final turn back to start
-        {'x': 50, 'z': 50, 'type': 'curve'},
-        {'x': 20, 'z': 20, 'type': 'curve'},
-    ]
+    # Create fixed road segments from start to end
+    num_segments = int((ROAD_END - ROAD_START) / segment_length) + 1
     
-    # Generate road segments
-    for i in range(len(circuit_points)):
-        point = circuit_points[i]
-        next_point = circuit_points[(i + 1) % len(circuit_points)]
-        
+    for i in range(num_segments):
+        z_position = ROAD_START + (i * segment_length)
         road_segments.append({
-            'start': {'x': point['x'], 'z': point['z']},
-            'end': {'x': next_point['x'], 'z': next_point['z']},
-            'type': point['type']
+            'z': z_position,
+            'type': 'straight'
         })
-    
-    road_curves = circuit_points
 
 def init_environment():
-    """Initialize all environment objects"""
+    """Initialize all environment objects positioned beside the fixed road"""
     global trees, buildings, street_lights, clouds
+    
+    # Generate street lights BESIDE the road along its length
+    street_lights = []
+    lamp_spacing = 50
+    
+    for z in range(ROAD_START, ROAD_END + 1, lamp_spacing):
+        # Left side lamp posts
+        street_lights.append({
+            'x': -(ROAD_WIDTH/2 + 5),  # 5 units away from road edge
+            'z': z,
+            'side': 'left'
+        })
+        # Right side lamp posts
+        street_lights.append({
+            'x': (ROAD_WIDTH/2 + 5),  # 5 units away from road edge
+            'z': z,
+            'side': 'right'
+        })
+    
+    # Add special markers at start and end
+    # Start line markers
+    street_lights.append({'x': -(ROAD_WIDTH/2 + 5), 'z': ROAD_START, 'side': 'left', 'special': 'start'})
+    street_lights.append({'x': (ROAD_WIDTH/2 + 5), 'z': ROAD_START, 'side': 'right', 'special': 'start'})
+    # Finish line markers
+    street_lights.append({'x': -(ROAD_WIDTH/2 + 5), 'z': ROAD_END, 'side': 'left', 'special': 'finish'})
+    street_lights.append({'x': (ROAD_WIDTH/2 + 5), 'z': ROAD_END, 'side': 'right', 'special': 'finish'})
+    
+    # Generate buildings BESIDE the road
+    buildings = []
+    building_spacing = 80
+    
+    for z in range(ROAD_START + 50, ROAD_END - 50, building_spacing):
+        # Buildings on left side
+        if random.random() > 0.3:
+            buildings.append({
+                'x': -(ROAD_WIDTH/2 + random.uniform(20, 40)),
+                'z': z + random.uniform(-10, 10),
+                'height': random.uniform(25, 45),
+                'width': random.uniform(15, 25),
+                'depth': random.uniform(15, 20)
+            })
+        
+        # Buildings on right side
+        if random.random() > 0.3:
+            buildings.append({
+                'x': (ROAD_WIDTH/2 + random.uniform(20, 40)),
+                'z': z + random.uniform(-10, 10),
+                'height': random.uniform(25, 45),
+                'width': random.uniform(15, 25),
+                'depth': random.uniform(15, 20)
+            })
     
     # Generate trees along the road
     trees = []
-    for segment in road_segments:
-        # Place trees along road segments
-        for t in range(3):
-            offset = random.uniform(25, 50)
-            side = random.choice([-1, 1])
-            
-            # Interpolate position along segment
-            alpha = random.random()
-            x = segment['start']['x'] + alpha * (segment['end']['x'] - segment['start']['x'])
-            z = segment['start']['z'] + alpha * (segment['end']['z'] - segment['start']['z'])
-            
-            # Add perpendicular offset
-            dx = segment['end']['x'] - segment['start']['x']
-            dz = segment['end']['z'] - segment['start']['z']
-            length = math.sqrt(dx*dx + dz*dz)
-            if length > 0:
-                nx = -dz / length * offset * side
-                nz = dx / length * offset * side
-                x += nx
-                z += nz
-            
-            height = random.uniform(8, 15)
-            tree_type = random.choice(['pine', 'oak', 'palm'])
-            trees.append({'x': x, 'z': z, 'height': height, 'type': tree_type})
+    tree_spacing = 25
     
-    # Generate buildings in clusters
-    buildings = []
-    building_zones = [
-        {'x': 150, 'z': -250, 'count': 8},
-        {'x': -100, 'z': -100, 'count': 6},
-        {'x': 350, 'z': 0, 'count': 7},
-        {'x': 150, 'z': 150, 'count': 5}
-    ]
-    
-    for zone in building_zones:
-        for b in range(zone['count']):
-            x = zone['x'] + random.uniform(-80, 80)
-            z = zone['z'] + random.uniform(-80, 80)
-            height = random.uniform(20, 50)
-            width = random.uniform(15, 25)
-            buildings.append({'x': x, 'z': z, 'height': height, 'width': width})
-    
-    # Generate street lights along the road
-    street_lights = []
-    for segment in road_segments:
-        # Place lights at segment points
-        street_lights.append({
-            'x': segment['start']['x'],
-            'z': segment['start']['z'],
-            'on': False
-        })
+    for z in range(ROAD_START - 50, ROAD_END + 50, tree_spacing):
+        # Trees on left side
+        if random.random() > 0.2:
+            x_offset = random.choice([
+                random.uniform(15, 18),  # Between road and buildings
+                random.uniform(50, 70)   # Beyond buildings
+            ])
+            trees.append({
+                'x': -(ROAD_WIDTH/2 + x_offset),
+                'z': z + random.uniform(-10, 10),
+                'height': random.uniform(10, 18),
+                'type': random.choice(['pine', 'oak', 'palm'])
+            })
+        
+        # Trees on right side
+        if random.random() > 0.2:
+            x_offset = random.choice([
+                random.uniform(15, 18),
+                random.uniform(50, 70)
+            ])
+            trees.append({
+                'x': (ROAD_WIDTH/2 + x_offset),
+                'z': z + random.uniform(-10, 10),
+                'height': random.uniform(10, 18),
+                'type': random.choice(['pine', 'oak', 'palm'])
+            })
     
     # Generate clouds
     clouds = []
-    for i in range(20):
-        x = random.uniform(-300, 300)
-        y = random.uniform(60, 100)
-        z = random.uniform(-300, 300)
-        size = random.uniform(15, 30)
-        clouds.append({'x': x, 'y': y, 'z': z, 'size': size})
+    for i in range(15):
+        clouds.append({
+            'x': random.uniform(-200, 200),
+            'y': random.uniform(60, 100),
+            'z': random.uniform(ROAD_START - 100, ROAD_END + 100),
+            'size': random.uniform(15, 30)
+        })
 
 def init_rain_system():
     """Initialize rain particle system"""
@@ -192,9 +194,9 @@ def init_rain_system():
     rain_particles = []
     for i in range(max_rain_particles):
         rain_particles.append({
-            'x': random.uniform(-200, 200),
+            'x': random.uniform(-150, 150),
             'y': random.uniform(0, 100),
-            'z': random.uniform(-300, 300),
+            'z': random.uniform(ROAD_START - 50, ROAD_END + 50),
             'speed': random.uniform(1.5, 3.0),
             'active': False
         })
@@ -249,12 +251,12 @@ def setup_camera():
     """Configure camera with perspective projection (from template)"""
     glMatrixMode(GL_PROJECTION)
     glLoadIdentity()
-    gluPerspective(fovY, WINDOW_WIDTH/WINDOW_HEIGHT, 0.1, 1000)
+    # Raised and moved back for better view of longer road
+    gluPerspective(fovY, WINDOW_WIDTH/WINDOW_HEIGHT, 0.1, 2000)  # Extended far plane to 2000
     
     glMatrixMode(GL_MODELVIEW)
     glLoadIdentity()
     
-    # Look at the road
     gluLookAt(camera_pos[0], camera_pos[1], camera_pos[2],
               camera_look[0], camera_look[1], camera_look[2],
               0, 1, 0)
@@ -345,9 +347,9 @@ def update_rain_particles():
             particle['x'] += random.uniform(-0.1, 0.1)  # Wind
             
             if particle['y'] < 0:
-                particle['x'] = random.uniform(-200, 200)
+                particle['x'] = random.uniform(-150, 150)
                 particle['y'] = random.uniform(80, 100)
-                particle['z'] = random.uniform(-300, 300)
+                particle['z'] = random.uniform(ROAD_START - 50, ROAD_END + 50)
         else:
             particle['active'] = False
 
@@ -378,133 +380,216 @@ def draw_rain():
     glEnable(GL_LIGHTING)
 
 def draw_road():
-    """Draw the racing circuit road"""
-    # Draw road segments
-    for segment in road_segments:
-        glColor3f(0.2, 0.2, 0.2) if weather_mode == "clear" else glColor3f(0.15, 0.15, 0.15)
-        
-        # Calculate road direction
-        dx = segment['end']['x'] - segment['start']['x']
-        dz = segment['end']['z'] - segment['start']['z']
-        length = math.sqrt(dx*dx + dz*dz)
-        
-        if length > 0:
-            # Perpendicular vector for road width
-            nx = -dz / length * ROAD_WIDTH / 2
-            nz = dx / length * ROAD_WIDTH / 2
-            
-            # Draw road segment
+    """Draw fixed-length straight road with start and finish lines"""
+    # Main road surface
+    glColor3f(0.2, 0.2, 0.2) if weather_mode == "clear" else glColor3f(0.15, 0.15, 0.15)
+    
+    # Draw the complete road from start to end
+    glBegin(GL_QUADS)
+    glVertex3f(-ROAD_WIDTH/2, 0, ROAD_START)
+    glVertex3f(ROAD_WIDTH/2, 0, ROAD_START)
+    glVertex3f(ROAD_WIDTH/2, 0, ROAD_END)
+    glVertex3f(-ROAD_WIDTH/2, 0, ROAD_END)
+    glEnd()
+    
+    # Draw start line (green)
+    glColor3f(0, 1, 0)
+    glBegin(GL_QUADS)
+    glVertex3f(-ROAD_WIDTH/2, 0.01, ROAD_START)
+    glVertex3f(ROAD_WIDTH/2, 0.01, ROAD_START)
+    glVertex3f(ROAD_WIDTH/2, 0.01, ROAD_START + 2)
+    glVertex3f(-ROAD_WIDTH/2, 0.01, ROAD_START + 2)
+    glEnd()
+    
+    # Draw finish line (checkered pattern)
+    checker_size = 2
+    for x in range(int(-ROAD_WIDTH/2), int(ROAD_WIDTH/2), checker_size):
+        for z in range(0, 4, checker_size):
+            if (int(x/checker_size) + int(z/checker_size)) % 2 == 0:
+                glColor3f(1, 1, 1)
+            else:
+                glColor3f(0, 0, 0)
             glBegin(GL_QUADS)
-            glVertex3f(segment['start']['x'] - nx, 0, segment['start']['z'] - nz)
-            glVertex3f(segment['start']['x'] + nx, 0, segment['start']['z'] + nz)
-            glVertex3f(segment['end']['x'] + nx, 0, segment['end']['z'] + nz)
-            glVertex3f(segment['end']['x'] - nx, 0, segment['end']['z'] - nz)
-            glEnd()
-            
-            # Draw center line
-            glColor3f(1, 1, 0)
-            glLineWidth(2.0)
-            glBegin(GL_LINES)
-            steps = int(length / 10)
-            for i in range(0, steps, 2):
-                t1 = i / float(steps)
-                t2 = min((i + 1) / float(steps), 1.0)
-                x1 = segment['start']['x'] + t1 * dx
-                z1 = segment['start']['z'] + t1 * dz
-                x2 = segment['start']['x'] + t2 * dx
-                z2 = segment['start']['z'] + t2 * dz
-                glVertex3f(x1, 0.01, z1)
-                glVertex3f(x2, 0.01, z2)
-            glEnd()
-            
-            # Side lines
-            glColor3f(1, 1, 1)
-            glBegin(GL_LINES)
-            glVertex3f(segment['start']['x'] - nx, 0.01, segment['start']['z'] - nz)
-            glVertex3f(segment['end']['x'] - nx, 0.01, segment['end']['z'] - nz)
-            glVertex3f(segment['start']['x'] + nx, 0.01, segment['start']['z'] + nz)
-            glVertex3f(segment['end']['x'] + nx, 0.01, segment['end']['z'] + nz)
+            glVertex3f(x, 0.01, ROAD_END - 4 + z)
+            glVertex3f(x + checker_size, 0.01, ROAD_END - 4 + z)
+            glVertex3f(x + checker_size, 0.01, ROAD_END - 4 + z + checker_size)
+            glVertex3f(x, 0.01, ROAD_END - 4 + z + checker_size)
             glEnd()
     
-    # Draw wet effect
+    # Center lane markings
+    glColor3f(1, 1, 0)
+    for z in range(ROAD_START + 10, ROAD_END - 10, 20):
+        if (z - ROAD_START) % 40 < 20:  # Dashed line
+            glBegin(GL_QUADS)
+            glVertex3f(-0.3, 0.01, z)
+            glVertex3f(0.3, 0.01, z)
+            glVertex3f(0.3, 0.01, z + 15)
+            glVertex3f(-0.3, 0.01, z + 15)
+            glEnd()
+    
+    # Side lines (continuous)
+    glColor3f(1, 1, 1)
+    glLineWidth(3.0)
+    glBegin(GL_LINES)
+    # Left side line
+    glVertex3f(-ROAD_WIDTH/2, 0.01, ROAD_START)
+    glVertex3f(-ROAD_WIDTH/2, 0.01, ROAD_END)
+    # Right side line
+    glVertex3f(ROAD_WIDTH/2, 0.01, ROAD_START)
+    glVertex3f(ROAD_WIDTH/2, 0.01, ROAD_END)
+    glEnd()
+    
+    # Wet road reflection if raining
     if weather_mode in ["rain", "heavy_rain"]:
         glEnable(GL_BLEND)
         glDepthMask(GL_FALSE)
         glColor4f(0.3, 0.3, 0.4, 0.3 * rain_intensity)
         
-        for segment in road_segments:
-            dx = segment['end']['x'] - segment['start']['x']
-            dz = segment['end']['z'] - segment['start']['z']
-            length = math.sqrt(dx*dx + dz*dz)
-            
-            if length > 0:
-                nx = -dz / length * ROAD_WIDTH / 2
-                nz = dx / length * ROAD_WIDTH / 2
-                
-                glBegin(GL_QUADS)
-                glVertex3f(segment['start']['x'] - nx, 0.02, segment['start']['z'] - nz)
-                glVertex3f(segment['start']['x'] + nx, 0.02, segment['start']['z'] + nz)
-                glVertex3f(segment['end']['x'] + nx, 0.02, segment['end']['z'] + nz)
-                glVertex3f(segment['end']['x'] - nx, 0.02, segment['end']['z'] - nz)
-                glEnd()
+        glBegin(GL_QUADS)
+        glVertex3f(-ROAD_WIDTH/2, 0.02, ROAD_START)
+        glVertex3f(ROAD_WIDTH/2, 0.02, ROAD_START)
+        glVertex3f(ROAD_WIDTH/2, 0.02, ROAD_END)
+        glVertex3f(-ROAD_WIDTH/2, 0.02, ROAD_END)
+        glEnd()
         
         glDepthMask(GL_TRUE)
 
 def draw_street_lights():
-    """Draw street lights along the road"""
+    """Draw street lights beside the road"""
     phase = get_time_phase()
     lights_on = phase in ["Night", "Dusk", "Dawn"] or weather_mode == "heavy_rain"
     
     for light in street_lights:
+        z_pos = light['z']
+        
+        # Check if this is a special marker
+        is_special = 'special' in light
+        
         glPushMatrix()
-        glTranslatef(light['x'], 0, light['z'])
+        glTranslatef(light['x'], 0, z_pos)
         
         # Light pole
-        glColor3f(0.3, 0.3, 0.3)
+        if is_special:
+            if light['special'] == 'start':
+                glColor3f(0, 0.8, 0)  # Green for start
+            else:
+                glColor3f(0.8, 0, 0)  # Red for finish
+        else:
+            glColor3f(0.3, 0.3, 0.3)
+        
         glPushMatrix()
         glRotatef(-90, 1, 0, 0)
-        glutSolidCylinder(0.3, 10, 8, 8)
+        glutSolidCylinder(0.2, 10, 8, 8)
+        glPopMatrix()
+        
+        # Horizontal arm extending toward road
+        glPushMatrix()
+        glTranslatef(0, 9.5, 0)
+        if light['side'] == 'left':
+            glRotatef(-90, 0, 1, 0)
+        else:
+            glRotatef(90, 0, 1, 0)
+        glRotatef(90, 0, 0, 1)
+        glutSolidCylinder(0.15, 3, 6, 6)
         glPopMatrix()
         
         # Light fixture
-        if lights_on:
+        light_x = 3 if light['side'] == 'left' else -3
+        
+        if lights_on or is_special:
             glDisable(GL_LIGHTING)
-            glColor3f(1.0, 1.0, 0.7)
+            if is_special:
+                if light['special'] == 'start':
+                    glColor3f(0, 1, 0)  # Green light for start
+                else:
+                    glColor3f(1, 0, 0)  # Red light for finish
+            else:
+                glColor3f(1.0, 1.0, 0.7)
+            
             glPushMatrix()
-            glTranslatef(0, 9.5, 0)
-            glutSolidSphere(0.8, 10, 10)
+            glTranslatef(light_x, 9.5, 0)
+            glutSolidSphere(0.5, 10, 10)
             glPopMatrix()
             
-            # Glow effect
+            # Light glow
             glEnable(GL_BLEND)
-            glColor4f(1.0, 1.0, 0.5, 0.2)
+            if is_special:
+                if light['special'] == 'start':
+                    glColor4f(0, 1, 0, 0.3)
+                else:
+                    glColor4f(1, 0, 0, 0.3)
+            else:
+                glColor4f(1.0, 1.0, 0.5, 0.2)
+            
             glPushMatrix()
-            glTranslatef(0, 9.5, 0)
-            glutSolidSphere(3, 8, 8)
+            glTranslatef(light_x, 9.5, 0)
+            glutSolidSphere(2.5, 8, 8)
             glPopMatrix()
+            
             glEnable(GL_LIGHTING)
         else:
             glColor3f(0.5, 0.5, 0.5)
             glPushMatrix()
-            glTranslatef(0, 9.5, 0)
-            glutSolidSphere(0.8, 10, 10)
+            glTranslatef(light_x, 9.5, 0)
+            glutSolidSphere(0.5, 10, 10)
             glPopMatrix()
         
         glPopMatrix()
 
-def draw_trees():
-    """Draw trees"""
-    for tree in trees:
+def draw_buildings():
+    """Draw buildings beside the road"""
+    for building in buildings:
+        z_pos = building['z']
+        
         glPushMatrix()
-        glTranslatef(tree['x'], 0, tree['z'])
+        glTranslatef(building['x'], building['height']/2, z_pos)
+        
+        # Main building structure
+        glColor3f(0.6, 0.6, 0.7)
+        glPushMatrix()
+        glScalef(building['width'], building['height'], building['depth'])
+        glutSolidCube(1)
+        glPopMatrix()
+        
+        # Windows at night
+        phase = get_time_phase()
+        if phase in ["Night", "Dusk", "Dawn"]:
+            glDisable(GL_LIGHTING)
+            glColor3f(1.0, 1.0, 0.5)
+            
+            # Front windows facing the road
+            for floor in range(3, int(building['height']), 5):
+                for window_x in range(-int(building['width']/2) + 2, int(building['width']/2) - 1, 3):
+                    if random.random() > 0.2:
+                        glPushMatrix()
+                        if building['x'] > 0:  # Building on right side
+                            glTranslatef(window_x, floor - building['height']/2, -building['depth']/2 - 0.1)
+                        else:  # Building on left side
+                            glTranslatef(window_x, floor - building['height']/2, building['depth']/2 + 0.1)
+                        glutSolidCube(1.5)
+                        glPopMatrix()
+            
+            glEnable(GL_LIGHTING)
+        
+        glPopMatrix()
+
+def draw_trees():
+    """Draw trees beside the road"""
+    for tree in trees:
+        z_pos = tree['z']
+        
+        glPushMatrix()
+        glTranslatef(tree['x'], 0, z_pos)
         
         if tree['type'] == 'pine':
+            # Pine tree trunk
             glColor3f(0.4, 0.2, 0.1)
             glPushMatrix()
             glRotatef(-90, 1, 0, 0)
             glutSolidCylinder(0.8, tree['height']/3, 8, 8)
             glPopMatrix()
             
+            # Pine tree layers
             glColor3f(0.1, 0.5, 0.1)
             for i in range(3):
                 glPushMatrix()
@@ -514,12 +599,14 @@ def draw_trees():
                 glPopMatrix()
         
         elif tree['type'] == 'oak':
+            # Oak tree trunk
             glColor3f(0.3, 0.15, 0.05)
             glPushMatrix()
             glRotatef(-90, 1, 0, 0)
             glutSolidCylinder(1.0, tree['height']/2, 8, 8)
             glPopMatrix()
             
+            # Oak tree crown
             glColor3f(0.2, 0.6, 0.1)
             glPushMatrix()
             glTranslatef(0, tree['height']*0.7, 0)
@@ -527,6 +614,7 @@ def draw_trees():
             glPopMatrix()
         
         else:  # palm
+            # Palm tree trunk
             glColor3f(0.5, 0.3, 0.1)
             for i in range(6):
                 glPushMatrix()
@@ -535,43 +623,16 @@ def draw_trees():
                 glutSolidCylinder(0.6, 2, 6, 6)
                 glPopMatrix()
             
+            # Palm leaves
             glColor3f(0.1, 0.7, 0.1)
             for angle in range(0, 360, 45):
                 glPushMatrix()
-                glTranslatef(0.9, 12, 0)
+                glTranslatef(0.9, tree['height'], 0)
                 glRotatef(angle, 0, 1, 0)
                 glRotatef(30, 1, 0, 0)
                 glScalef(4, 0.4, 1.2)
                 glutSolidCube(1)
                 glPopMatrix()
-        
-        glPopMatrix()
-
-def draw_buildings():
-    """Draw buildings"""
-    for building in buildings:
-        glPushMatrix()
-        glTranslatef(building['x'], building['height']/2, building['z'])
-        
-        glColor3f(0.6, 0.6, 0.7)
-        glPushMatrix()
-        glScalef(building['width'], building['height'], building['width'])
-        glutSolidCube(1)
-        glPopMatrix()
-        
-        # Windows at night
-        phase = get_time_phase()
-        if phase in ["Night", "Dusk", "Dawn"]:
-            glDisable(GL_LIGHTING)
-            glColor3f(1.0, 1.0, 0.5)
-            for floor in range(3, int(building['height']), 5):
-                for window in range(-int(building['width']/2), int(building['width']/2), 4):
-                    if random.random() > 0.2:
-                        glPushMatrix()
-                        glTranslatef(window, floor - building['height']/2, building['width']/2 + 0.1)
-                        glutSolidCube(1.2)
-                        glPopMatrix()
-            glEnable(GL_LIGHTING)
         
         glPopMatrix()
 
@@ -653,17 +714,43 @@ def draw_clouds():
     glEnable(GL_LIGHTING)
 
 def draw_ground():
-    """Draw ground/grass"""
+    """Draw ground/grass beside the road"""
     glColor3f(0.3, 0.5, 0.2)
+    
+    # Left side ground
     glBegin(GL_QUADS)
-    glVertex3f(-400, -0.1, -400)
-    glVertex3f(400, -0.1, -400)
-    glVertex3f(400, -0.1, 400)
-    glVertex3f(-400, -0.1, 400)
+    glVertex3f(-400, -0.1, ROAD_START - 100)
+    glVertex3f(-(ROAD_WIDTH/2 + 1), -0.1, ROAD_START - 100)
+    glVertex3f(-(ROAD_WIDTH/2 + 1), -0.1, ROAD_END + 100)
+    glVertex3f(-400, -0.1, ROAD_END + 100)
+    glEnd()
+    
+    # Right side ground  
+    glBegin(GL_QUADS)
+    glVertex3f((ROAD_WIDTH/2 + 1), -0.1, ROAD_START - 100)
+    glVertex3f(400, -0.1, ROAD_START - 100)
+    glVertex3f(400, -0.1, ROAD_END + 100)
+    glVertex3f((ROAD_WIDTH/2 + 1), -0.1, ROAD_END + 100)
+    glEnd()
+    
+    # Ground before road start
+    glBegin(GL_QUADS)
+    glVertex3f(-400, -0.1, ROAD_START - 100)
+    glVertex3f(400, -0.1, ROAD_START - 100)
+    glVertex3f(400, -0.1, ROAD_START)
+    glVertex3f(-400, -0.1, ROAD_START)
+    glEnd()
+    
+    # Ground after road end
+    glBegin(GL_QUADS)
+    glVertex3f(-400, -0.1, ROAD_END)
+    glVertex3f(400, -0.1, ROAD_END)
+    glVertex3f(400, -0.1, ROAD_END + 100)
+    glVertex3f(-400, -0.1, ROAD_END + 100)
     glEnd()
 
 def draw_road_map():
-    """Draw overhead map view of the road"""
+    """Draw overhead map view of the straight road"""
     glDisable(GL_LIGHTING)
     glDisable(GL_DEPTH_TEST)
     
@@ -679,15 +766,16 @@ def draw_road_map():
     # Map background
     map_x = WINDOW_WIDTH - 200
     map_y = WINDOW_HEIGHT - 200
-    map_size = 180
+    map_width = 60
+    map_height = 180
     
     glEnable(GL_BLEND)
     glColor4f(0, 0, 0, 0.7)
     glBegin(GL_QUADS)
     glVertex2f(map_x, map_y)
-    glVertex2f(map_x + map_size, map_y)
-    glVertex2f(map_x + map_size, map_y + map_size)
-    glVertex2f(map_x, map_y + map_size)
+    glVertex2f(map_x + map_width, map_y)
+    glVertex2f(map_x + map_width, map_y + map_height)
+    glVertex2f(map_x, map_y + map_height)
     glEnd()
     
     # Map border
@@ -695,36 +783,35 @@ def draw_road_map():
     glLineWidth(2.0)
     glBegin(GL_LINE_LOOP)
     glVertex2f(map_x, map_y)
-    glVertex2f(map_x + map_size, map_y)
-    glVertex2f(map_x + map_size, map_y + map_size)
-    glVertex2f(map_x, map_y + map_size)
+    glVertex2f(map_x + map_width, map_y)
+    glVertex2f(map_x + map_width, map_y + map_height)
+    glVertex2f(map_x, map_y + map_height)
     glEnd()
     
-    # Draw road on map
-    center_x = map_x + map_size/2
-    center_y = map_y + map_size/2
-    scale = 0.4
-    
+    # Draw straight road on map
+    center_x = map_x + map_width/2
     glColor3f(0.5, 0.5, 0.5)
-    glLineWidth(6.0)
-    glBegin(GL_LINE_LOOP)
-    for point in road_curves:
-        x = center_x + point['x'] * scale
-        y = center_y - point['z'] * scale  # Flip z for screen coordinates
-        glVertex2f(x, y)
+    glLineWidth(8.0)
+    glBegin(GL_LINES)
+    glVertex2f(center_x, map_y + 10)
+    glVertex2f(center_x, map_y + map_height - 10)
     glEnd()
     
-    # Draw start/finish line
-    glColor3f(1.0, 0.0, 0.0)
-    glLineWidth(3.0)
-    glBegin(GL_LINES)
-    glVertex2f(center_x - 10, center_y)
-    glVertex2f(center_x + 10, center_y)
+    # Draw start and finish markers
+    glColor3f(0, 1, 0)  # Green for start
+    glPointSize(10.0)
+    glBegin(GL_POINTS)
+    glVertex2f(center_x, map_y + map_height - 20)
+    glEnd()
+    
+    glColor3f(1, 0, 0)  # Red for finish
+    glBegin(GL_POINTS)
+    glVertex2f(center_x, map_y + 20)
     glEnd()
     
     # Map title
     glColor3f(1, 1, 1)
-    glRasterPos2f(map_x + 5, map_y + map_size - 15)
+    glRasterPos2f(map_x + 5, map_y + map_height - 15)
     for char in "TRACK MAP":
         glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, ord(char))
     
@@ -806,8 +893,8 @@ def draw_hud():
     glEnable(GL_LIGHTING)
 
 def update_environment():
-    """Update environment animations"""
-    global time_of_day, environment_offset
+    """Update environment animations for fixed road"""
+    global time_of_day
     
     # Update time
     if auto_time:
@@ -815,14 +902,11 @@ def update_environment():
         if time_of_day > 1.0:
             time_of_day = 0.0
     
-    # Update environment offset for subtle movement
-    environment_offset += scroll_speed
-    
-    # Update clouds
+    # Update clouds (they still move)
     for cloud in clouds:
         cloud['x'] += 0.05
-        if cloud['x'] > 400:
-            cloud['x'] = -400
+        if cloud['x'] > 300:
+            cloud['x'] = -300
     
     # Update rain
     update_rain_particles()
@@ -880,7 +964,7 @@ def keyboard(key, x, y):
         use_fog = not use_fog
         print(f"Fog: {'ON' if use_fog else 'OFF'}")
     elif key == b'\x1b':  # ESC
-        exit(0)
+        sys.exit(0)
 
 def special_keys(key, x, y):
     """Handle special keys (from template)"""
@@ -894,13 +978,15 @@ def special_keys(key, x, y):
         camera_angle -= 5
         # Rotate camera around center
         radius = math.sqrt(camera_pos[0]**2 + camera_pos[2]**2)
-        camera_pos[0] = radius * math.sin(math.radians(camera_angle))
-        camera_pos[2] = radius * math.cos(math.radians(camera_angle))
+        if radius > 0:
+            camera_pos[0] = radius * math.sin(math.radians(camera_angle))
+            camera_pos[2] = radius * math.cos(math.radians(camera_angle))
     elif key == GLUT_KEY_RIGHT:
         camera_angle += 5
         radius = math.sqrt(camera_pos[0]**2 + camera_pos[2]**2)
-        camera_pos[0] = radius * math.sin(math.radians(camera_angle))
-        camera_pos[2] = radius * math.cos(math.radians(camera_angle))
+        if radius > 0:
+            camera_pos[0] = radius * math.sin(math.radians(camera_angle))
+            camera_pos[2] = radius * math.cos(math.radians(camera_angle))
 
 def timer(value):
     """Timer for consistent frame rate"""
@@ -913,7 +999,7 @@ def main():
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH)
     glutInitWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT)
     glutInitWindowPosition(100, 100)
-    glutCreateWindow(b"Racing Game Environment - Track with Weather System")
+    glutCreateWindow(b"Racing Game Environment - Fixed Length Track")
     
     init_scene()
     
@@ -923,9 +1009,13 @@ def main():
     glutTimerFunc(0, timer, 0)
     
     print("=" * 60)
-    print("RACING GAME ENVIRONMENT")
+    print("RACING GAME ENVIRONMENT - FIXED LENGTH TRACK")
     print("=" * 60)
-    print("ENVIRONMENT CONTROLS:")
+    print("TRACK INFO:")
+    print(f"  Road Length: {ROAD_END - ROAD_START} units")
+    print(f"  Start Position: {ROAD_START}")
+    print(f"  Finish Position: {ROAD_END}")
+    print("\nENVIRONMENT CONTROLS:")
     print("  1-4: Set Time Phase")
     print("    1: Night (moonlight, street lights on)")
     print("    2: Dawn (sunrise colors)")
@@ -936,12 +1026,15 @@ def main():
     print("  F: Toggle Extra Fog")
     print("  Arrow Keys: Rotate/Move Camera")
     print("\nFEATURES:")
-    print("  - Complete racing circuit with curves")
+    print("  - Fixed-length straight road (not infinite)")
+    print("  - Green START line and checkered FINISH line")
+    print("  - Lamp posts beside road with colored markers at start/finish")
+    print("  - Buildings beside road with proper spacing")
+    print("  - Trees between and beyond buildings")
     print("  - Dynamic weather with rain particles")
     print("  - Day/night cycle with proper lighting")
-    print("  - Street lights (auto-on at night/rain)")
-    print("  - Track map in top-right corner")
-    print("  - Various tree types and buildings")
+    print("  - Street lights auto-on at night/rain")
+    print("  - Track map showing the complete road")
     print("  - Wet road effects during rain")
     print("\nESC: Exit")
     print("=" * 60)
