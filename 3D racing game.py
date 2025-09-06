@@ -16,18 +16,30 @@ import sys
 WINDOW_WIDTH = 1000
 WINDOW_HEIGHT = 800
 
-# Camera variables (from template)
-camera_pos = [0, 6, 8]  # Even closer and lower for ultra-close bumper cam POV
+# Camera variables - Multiple Camera Modes System
+camera_pos = [0, 6, 8]
 camera_look = [0, 0, 0]
-fovY = 75  # Even wider FOV for ultra-close view
+fovY = 75
 camera_angle = 0
-camera_follow_vehicle = True  # New: Enable/disable camera following
-camera_distance = 8  # Ultra-close behind vehicle - extreme bumper cam style
-camera_height = 6    # Even lower height - very close to vehicle
-camera_smooth_factor = 0.25   # Faster camera following for ultra-close view
+
+# Camera modes system
+camera_mode = 0  # 0=Chase, 1=Drone, 2=Cinematic, 3=Free
+camera_modes = ["Chase", "Drone", "Cinematic", "Free"]
+camera_follow_vehicle = True  # Only for Free mode
+camera_smooth_factor = 0.15   # Smooth camera transitions
+
+# Camera positioning variables
 current_camera_x = 0.0
 current_camera_y = 6.0
 current_camera_z = 8.0
+
+# Camera mode specific settings
+camera_settings = {
+    "Chase": {"distance": 8, "height": 6, "smooth": 0.15},
+    "Drone": {"distance": 15, "height": 12, "smooth": 0.10},
+    "Cinematic": {"distance": 12, "height": 8, "smooth": 0.08},
+    "Free": {"distance": 10, "height": 5, "smooth": 0.20}
+}
 
 # Road configuration
 ROAD_WIDTH = 20
@@ -58,10 +70,77 @@ use_lighting = True
 # ===== NEW RACING GAME FEATURES =====
 
 # Game state
-game_state = "playing"  # playing, game_over, paused
+game_state = "main_menu"  # main_menu, playing, game_over, paused
 score = 0
 lives = 3
 game_time = 0.0
+
+# Main menu variables
+menu_selection = 0  # Current menu item (0-4)
+menu_page = "main"  # main, settings, instructions, high_scores
+selected_vehicle = "car"  # Default vehicle selection
+difficulty = "normal"  # easy, normal, hard
+
+# High scores system
+high_scores = []  # List of (time, vehicle, date) tuples
+max_high_scores = 10  # Maximum number of high scores to keep
+
+def load_high_scores():
+    """Load high scores from file"""
+    global high_scores
+    try:
+        with open("high_scores.txt", "r") as f:
+            lines = f.readlines()
+            high_scores = []
+            for line in lines:
+                if line.strip():
+                    parts = line.strip().split(",")
+                    if len(parts) >= 3:
+                        time_val = float(parts[0])
+                        vehicle = parts[1]
+                        date = parts[2]
+                        high_scores.append((time_val, vehicle, date))
+            # Sort by time (ascending - lower is better)
+            high_scores.sort(key=lambda x: x[0])
+    except FileNotFoundError:
+        high_scores = []
+        print("No high scores file found, starting fresh")
+
+def save_high_scores():
+    """Save high scores to file"""
+    try:
+        with open("high_scores.txt", "w") as f:
+            for time_val, vehicle, date in high_scores:
+                f.write(f"{time_val},{vehicle},{date}\n")
+    except Exception as e:
+        print(f"Error saving high scores: {e}")
+
+def add_high_score(time_val, vehicle):
+    """Add a new high score if it qualifies"""
+    global high_scores
+    from datetime import datetime
+    
+    # Get current date
+    current_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+    
+    # Add new score
+    high_scores.append((time_val, vehicle, current_date))
+    
+    # Sort by time (ascending - lower is better)
+    high_scores.sort(key=lambda x: x[0])
+    
+    # Keep only top scores
+    if len(high_scores) > max_high_scores:
+        high_scores = high_scores[:max_high_scores]
+    
+    # Save to file
+    save_high_scores()
+    
+    # Check if this is a new high score
+    if high_scores[0] == (time_val, vehicle, current_date):
+        print(f"NEW HIGH SCORE! {time_val:.2f} seconds with {vehicle}!")
+    else:
+        print(f"Score added: {time_val:.2f} seconds with {vehicle}")
 
 # Player vehicle
 class Vehicle:
@@ -73,25 +152,25 @@ class Vehicle:
     def setup_vehicle_properties(self):
         """Set vehicle-specific properties with realistic physics"""
         if self.type == "cycle":
-            self.max_speed = 1.8  # Reduced from 8.0 - light and nimble
+            self.max_speed = 1.4  # Reduced from 8.0 - light and nimble
             self.acceleration = 0.10  # Reduced for more gradual build-up
-            self.turn_speed = 2.0  # Much more realistic turning - was 5.0
+            self.turn_speed = 4.0  # Much more realistic turning - was 5.0
             self.brake_power = 0.8  # Effective braking for light vehicle
             self.drift_factor = 0.9  # High drift - very light
             self.weight = 0.3
             self.size = [1.5, 1.0, 3.0]  # width, height, length
         elif self.type == "bike":
-            self.max_speed = 2.5  # Reduced from 10.0 - balanced performance
+            self.max_speed = 1.8  # Reduced from 10.0 - balanced performance
             self.acceleration = 0.18  # Moderate acceleration
-            self.turn_speed = 2.5  # Much more realistic turning - was 4.0
+            self.turn_speed = 3.5  # Much more realistic turning - was 4.0
             self.brake_power = 1.0  # Strong braking
             self.drift_factor = 0.6  # Medium drift - balanced
             self.weight = 0.6
             self.size = [2.0, 1.2, 4.0]
         else:  # car
-            self.max_speed = 2.8  # Reduced from 12.0 - powerful but controlled
+            self.max_speed = 2.0  # Reduced from 12.0 - powerful but controlled
             self.acceleration = 0.20  # Strong but not instant
-            self.turn_speed = 3.0  # Much more realistic turning - was 3.5
+            self.turn_speed = 2.8  # Much more realistic turning - was 3.5
             self.brake_power = 1.2  # Very strong braking for heavy vehicle
             self.drift_factor = 0.2  # Low drift - very stable
             self.weight = 1.0
@@ -140,7 +219,12 @@ class Vehicle:
             steering_input = -1.0
         
         # Realistic acceleration with momentum system
-        speed_limit = self.max_speed * (speed_boost_multiplier if speed_boost_active else 1.0)
+        # Calculate speed limit with stackable speed boost
+        if speed_boost_active:
+            current_multiplier = speed_boost_multiplier + (speed_boost_stack_count - 1) * 0.2
+            speed_limit = self.max_speed * current_multiplier
+        else:
+            speed_limit = self.max_speed
         
         if throttle_input > 0:
             # Progressive acceleration - builds up gradually like real vehicles
@@ -439,12 +523,12 @@ class Vehicle:
     
     def handle_collision(self, collision_type):
         """Handle different types of collisions"""
-        global lives, game_state, has_shield
+        global lives, game_state, shield_count
         
         if collision_type == "obstacle":
-            if has_shield:
-                print("Shield protected you from collision!")
-                has_shield = False
+            if shield_count > 0:
+                shield_count -= 1
+                print(f"Shield protected you from collision! Remaining shields: {shield_count}")
                 return
             else:
                 lives -= 1
@@ -469,6 +553,9 @@ class Vehicle:
         score = int(game_time * 100) + lives * 1000
         print(f"Congratulations! You finished in {game_time:.1f} seconds!")
         print(f"Final Score: {score}")
+        
+        # Add to high scores
+        add_high_score(game_time, self.type)
     
     def get_aabb(self):
         """Get vehicle's AABB for collision detection"""
@@ -565,11 +652,13 @@ class Powerup:
 
 powerups = []
 
-# Powerup effects
-has_shield = False
+# Powerup effects - Stackable system
+shield_count = 0  # Number of shields stacked
+shield_duration = 10.0  # Duration per shield in seconds
 speed_boost_active = False
 speed_boost_timer = 0.0
 speed_boost_multiplier = 1.5
+speed_boost_stack_count = 0  # Number of speed boosts stacked
 
 # Road boundary feedback
 boundary_hit_timer = 0.0
@@ -585,7 +674,7 @@ def has_collided(aabb1, aabb2):
 
 def check_collisions():
     """Check all collisions in the game"""
-    global has_shield, speed_boost_active, speed_boost_timer, obstacles, powerups
+    global shield_count, speed_boost_active, speed_boost_timer, speed_boost_stack_count, obstacles, powerups
     
     vehicle_aabb = player_vehicle.get_aabb()
     
@@ -599,12 +688,15 @@ def check_collisions():
     for powerup in powerups:
         if not powerup.collected and has_collided(vehicle_aabb, powerup.get_aabb()):
             if powerup.type == "speed":
+                # Stackable speed boost - extend timer and increase stack count
+                speed_boost_stack_count += 1
+                speed_boost_timer += 5.0  # Add 5 seconds per boost
                 speed_boost_active = True
-                speed_boost_timer = 5.0  # 5 seconds
-                print("Speed boost activated!")
+                print(f"Speed boost activated! Stack: {speed_boost_stack_count}, Duration: {speed_boost_timer:.1f}s")
             elif powerup.type == "shield":
-                has_shield = True
-                print("Shield activated!")
+                # Stackable shield - add to shield count
+                shield_count += 1
+                print(f"Shield activated! Total shields: {shield_count}")
             powerup.collected = True
 
 # Object spawning
@@ -879,18 +971,42 @@ def setup_camera():
     glMatrixMode(GL_MODELVIEW)
     glLoadIdentity()
     
-    # Camera following logic
-    if camera_follow_vehicle and game_state == "playing":
-        # Calculate target camera position behind the vehicle
+    # Multiple camera modes system
+    if game_state == "playing":
+        current_mode = camera_modes[camera_mode]
+        settings = camera_settings[current_mode]
+        
+        # All camera modes are automatic
         vehicle_angle_rad = math.radians(player_vehicle.rotation)
-        target_camera_x = player_vehicle.x - camera_distance * math.sin(vehicle_angle_rad)
-        target_camera_z = player_vehicle.z - camera_distance * math.cos(vehicle_angle_rad)
-        target_camera_y = player_vehicle.y + camera_height
+        
+        if current_mode == "Chase":
+            # Standard chase camera
+            target_camera_x = player_vehicle.x - settings["distance"] * math.sin(vehicle_angle_rad)
+            target_camera_z = player_vehicle.z - settings["distance"] * math.cos(vehicle_angle_rad)
+            target_camera_y = player_vehicle.y + settings["height"]
+            
+        elif current_mode == "Drone":
+            # High, wide drone view
+            target_camera_x = player_vehicle.x - settings["distance"] * math.sin(vehicle_angle_rad)
+            target_camera_z = player_vehicle.z - settings["distance"] * math.cos(vehicle_angle_rad)
+            target_camera_y = player_vehicle.y + settings["height"]
+            
+        elif current_mode == "Cinematic":
+            # Smooth, movie-like following
+            target_camera_x = player_vehicle.x - settings["distance"] * math.sin(vehicle_angle_rad)
+            target_camera_z = player_vehicle.z - settings["distance"] * math.cos(vehicle_angle_rad)
+            target_camera_y = player_vehicle.y + settings["height"]
+            
+        elif current_mode == "Free":
+            # Free camera - balanced view
+            target_camera_x = player_vehicle.x - settings["distance"] * math.sin(vehicle_angle_rad)
+            target_camera_z = player_vehicle.z - settings["distance"] * math.cos(vehicle_angle_rad)
+            target_camera_y = player_vehicle.y + settings["height"]
         
         # Smooth camera movement
-        current_camera_x += (target_camera_x - current_camera_x) * camera_smooth_factor
-        current_camera_y += (target_camera_y - current_camera_y) * camera_smooth_factor
-        current_camera_z += (target_camera_z - current_camera_z) * camera_smooth_factor
+        current_camera_x += (target_camera_x - current_camera_x) * settings["smooth"]
+        current_camera_y += (target_camera_y - current_camera_y) * settings["smooth"]
+        current_camera_z += (target_camera_z - current_camera_z) * settings["smooth"]
         
         # Add screen shake effect when hitting road boundaries
         if boundary_hit_intensity > 0:
@@ -899,16 +1015,12 @@ def setup_camera():
             current_camera_x += shake_x
             current_camera_y += shake_y
         
-        # Look at the vehicle
-        look_x = player_vehicle.x
-        look_z = player_vehicle.z
-        look_y = player_vehicle.y + 1.0  # Look even closer to vehicle for ultra-close bumper cam POV
-        
+        # Look at vehicle
         gluLookAt(current_camera_x, current_camera_y, current_camera_z,
-                  look_x, look_y, look_z,
+                  player_vehicle.x, player_vehicle.y + 1, player_vehicle.z,
                   0, 1, 0)
     else:
-        # Use static camera position
+        # Static camera for menu
         gluLookAt(camera_pos[0], camera_pos[1], camera_pos[2],
                   camera_look[0], camera_look[1], camera_look[2],
                   0, 1, 0)
@@ -1829,11 +1941,12 @@ def update_environment():
             powerup.update()
         
         # Update speed boost
-        global speed_boost_active, speed_boost_timer
+        global speed_boost_active, speed_boost_timer, speed_boost_stack_count
         if speed_boost_active:
             speed_boost_timer -= 0.016
             if speed_boost_timer <= 0:
                 speed_boost_active = False
+                speed_boost_stack_count = 0
                 print("Speed boost expired!")
         
         # Update boundary hit feedback
@@ -1849,13 +1962,16 @@ def draw_player_vehicle():
     if game_state != "playing":
         return
     
+    
     glPushMatrix()
     glTranslatef(player_vehicle.x, player_vehicle.y + player_vehicle.suspension_offset, player_vehicle.z)
     glRotatef(player_vehicle.rotation, 0, 1, 0)
     glRotatef(player_vehicle.tilt_angle, 1, 0, 0)  # Apply tilt for banking effect
     
-    # Apply speed boost effect
+    # Apply speed boost effect with stacking multiplier
     if speed_boost_active:
+        # Increase speed boost effectiveness based on stack count
+        current_multiplier = speed_boost_multiplier + (speed_boost_stack_count - 1) * 0.2
         glColor3f(1.0, 0.8, 0.0)  # Golden glow
     else:
         # Vehicle-specific colors based on type
@@ -1891,6 +2007,37 @@ def draw_player_vehicle():
         draw_car()
     
     glPopMatrix()
+    
+    # Draw shield effect if shields are active
+    if shield_count > 0:
+        draw_shield_effect()
+
+
+def draw_shield_effect():
+    """Draw a subtle glowing shield effect around the vehicle when shields are active"""
+    global shield_count
+    
+    # Set up for transparent shield effect
+    glEnable(GL_BLEND)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+    
+    # Shield color based on number of shields (more shields = brighter)
+    intensity = min(1.0, 0.2 + (shield_count * 0.15))
+    glColor4f(0.0, 0.6, 1.0, intensity * 0.4)  # More subtle cyan with transparency
+    
+    # Draw shield effect around the vehicle
+    glPushMatrix()
+    # Position at vehicle center, slightly above
+    glTranslatef(player_vehicle.x, player_vehicle.y + 0.5, player_vehicle.z)
+    
+    # Draw a single subtle shield layer
+    # Use a smaller, more appropriate size for the vehicle
+    glutWireSphere(1.8, 8, 8)  # Much smaller and less detailed
+    
+    glPopMatrix()
+    
+    # Disable blending
+    glDisable(GL_BLEND)
 
 def draw_car():
     """Draw a highly detailed and realistic sports car"""
@@ -2947,9 +3094,16 @@ def draw_game_hud():
     for char in time_text:
         glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
     
+    # Camera mode
+    current_mode = camera_modes[camera_mode]
+    camera_text = f"Camera: {current_mode}"
+    glRasterPos2f(20, WINDOW_HEIGHT - 130)
+    for char in camera_text:
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
+    
     # Vehicle type
     vehicle_text = f"Vehicle: {player_vehicle.type.title()}"
-    glRasterPos2f(20, WINDOW_HEIGHT - 130)
+    glRasterPos2f(20, WINDOW_HEIGHT - 155)
     for char in vehicle_text:
         glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
     
@@ -2964,16 +3118,16 @@ def draw_game_hud():
     # Reset color for other elements
     glColor3f(1, 1, 1)
     
-    # Powerup status
-    if has_shield:
-        shield_text = "Shield: ACTIVE"
+    # Powerup status - Updated for stackable system
+    if shield_count > 0:
+        shield_text = f"Shields: {shield_count}"
         glColor3f(0, 1, 1)
         glRasterPos2f(20, WINDOW_HEIGHT - 155)
         for char in shield_text:
             glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
     
     if speed_boost_active:
-        boost_text = f"Speed Boost: {speed_boost_timer:.1f}s"
+        boost_text = f"Speed Boost: {speed_boost_timer:.1f}s (x{speed_boost_stack_count})"
         glColor3f(1, 1, 0)
         glRasterPos2f(200, WINDOW_HEIGHT - 155)
         for char in boost_text:
@@ -3028,8 +3182,8 @@ def draw_game_hud():
             for char in game_over_text:
                 glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
             
-            restart_text = "Press SPACE to restart"
-            glRasterPos2f(WINDOW_WIDTH/2 - 100, WINDOW_HEIGHT/2 - 20)
+            restart_text = "Press SPACE to return to menu"
+            glRasterPos2f(WINDOW_WIDTH/2 - 120, WINDOW_HEIGHT/2 - 20)
             for char in restart_text:
                 glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
         else:
@@ -3038,8 +3192,8 @@ def draw_game_hud():
             for char in finish_text:
                 glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
             
-            restart_text = "Press SPACE to restart"
-            glRasterPos2f(WINDOW_WIDTH/2 - 100, WINDOW_HEIGHT/2 - 20)
+            restart_text = "Press SPACE to return to menu"
+            glRasterPos2f(WINDOW_WIDTH/2 - 120, WINDOW_HEIGHT/2 - 20)
             for char in restart_text:
                 glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
     
@@ -3072,6 +3226,250 @@ def draw_game_hud():
     glEnable(GL_DEPTH_TEST)
     glEnable(GL_LIGHTING)
 
+def draw_main_menu():
+    """Draw the main menu interface"""
+    global menu_selection, menu_page, selected_vehicle, difficulty
+    
+    # Disable depth testing for 2D overlay
+    glDisable(GL_DEPTH_TEST)
+    glDisable(GL_LIGHTING)
+    
+    # Draw semi-transparent background overlay
+    glEnable(GL_BLEND)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+    glColor4f(0.0, 0.0, 0.0, 0.7)  # Dark overlay
+    glBegin(GL_QUADS)
+    glVertex2f(-1, -1)
+    glVertex2f(1, -1)
+    glVertex2f(1, 1)
+    glVertex2f(-1, 1)
+    glEnd()
+    glDisable(GL_BLEND)
+    
+    # Set up 2D orthographic projection for menu
+    glMatrixMode(GL_PROJECTION)
+    glPushMatrix()
+    glLoadIdentity()
+    glOrtho(0, WINDOW_WIDTH, 0, WINDOW_HEIGHT, -1, 1)
+    glMatrixMode(GL_MODELVIEW)
+    glPushMatrix()
+    glLoadIdentity()
+    
+    if menu_page == "main":
+        # Main menu title
+        glColor3f(1.0, 1.0, 0.0)  # Yellow title
+        glRasterPos2f(WINDOW_WIDTH // 2 - 150, WINDOW_HEIGHT - 100)
+        title = "🏁 RACING GAME 🏁"
+        for char in title:
+            glutBitmapCharacter(GLUT_BITMAP_TIMES_ROMAN_24, ord(char))
+        
+        # Menu options
+        menu_options = ["Play Game", "Settings", "Instructions", "High Scores", "Exit"]
+        start_y = WINDOW_HEIGHT // 2 + 50
+        
+        for i, option in enumerate(menu_options):
+            if i == menu_selection:
+                glColor3f(1.0, 0.8, 0.0)  # Bright yellow for selection
+                # Draw selection arrow
+                glRasterPos2f(WINDOW_WIDTH // 2 - 200, start_y - i * 40)
+                glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord('▶'))
+            else:
+                glColor3f(0.8, 0.8, 0.8)  # Gray for unselected
+            
+            glRasterPos2f(WINDOW_WIDTH // 2 - 150, start_y - i * 40)
+            for char in option:
+                glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
+        
+        # Current settings display
+        glColor3f(0.6, 0.6, 0.6)
+        glRasterPos2f(50, 100)
+        settings_text = f"Vehicle: {selected_vehicle.title()} | Difficulty: {difficulty.title()}"
+        for char in settings_text:
+            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, ord(char))
+        
+        # Controls hint
+        glColor3f(0.5, 0.5, 0.5)
+        glRasterPos2f(50, 50)
+        controls_text = "Use ↑↓ to navigate, ENTER to select, ESC to exit"
+        for char in controls_text:
+            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, ord(char))
+        
+        # Debug info
+        glColor3f(0.3, 0.3, 0.3)
+        glRasterPos2f(50, 20)
+        debug_text = f"Selection: {menu_selection}, Page: {menu_page}"
+        for char in debug_text:
+            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_10, ord(char))
+    
+    elif menu_page == "settings":
+        # Settings page
+        glColor3f(1.0, 1.0, 0.0)
+        glRasterPos2f(WINDOW_WIDTH // 2 - 100, WINDOW_HEIGHT - 100)
+        title = "⚙️ SETTINGS"
+        for char in title:
+            glutBitmapCharacter(GLUT_BITMAP_TIMES_ROMAN_24, ord(char))
+        
+        # Vehicle selection
+        glColor3f(0.8, 0.8, 0.8)
+        glRasterPos2f(WINDOW_WIDTH // 2 - 200, WINDOW_HEIGHT // 2 + 50)
+        vehicle_text = "Vehicle Type:"
+        for char in vehicle_text:
+            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
+        
+        vehicles = ["Cycle (Fast turning)", "Bike (Balanced)", "Car (High speed)"]
+        vehicle_types = ["cycle", "bike", "car"]
+        
+        for i, (vehicle, vtype) in enumerate(zip(vehicles, vehicle_types)):
+            if vtype == selected_vehicle:
+                glColor3f(1.0, 0.8, 0.0)
+                glRasterPos2f(WINDOW_WIDTH // 2 - 180, WINDOW_HEIGHT // 2 - i * 30)
+                glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord('●'))
+            else:
+                glColor3f(0.6, 0.6, 0.6)
+            
+            glRasterPos2f(WINDOW_WIDTH // 2 - 150, WINDOW_HEIGHT // 2 - i * 30)
+            for char in vehicle:
+                glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
+        
+        # Navigation instructions
+        glColor3f(0.8, 0.8, 0.8)
+        glRasterPos2f(WINDOW_WIDTH // 2 - 100, 150)
+        nav_text = "Use ↑↓ to change vehicle, ESC to go back"
+        for char in nav_text:
+            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, ord(char))
+        
+        # Quick selection hint
+        glColor3f(0.6, 0.6, 0.6)
+        glRasterPos2f(WINDOW_WIDTH // 2 - 80, 120)
+        quick_text = "Or press 1/2/3 for quick selection"
+        for char in quick_text:
+            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_10, ord(char))
+    
+    elif menu_page == "instructions":
+        # Instructions page
+        glColor3f(1.0, 1.0, 0.0)
+        glRasterPos2f(WINDOW_WIDTH // 2 - 120, WINDOW_HEIGHT - 100)
+        title = "📖 INSTRUCTIONS"
+        for char in title:
+            glutBitmapCharacter(GLUT_BITMAP_TIMES_ROMAN_24, ord(char))
+        
+        # Instructions text
+        instructions = [
+            "CONTROLS:",
+            "W/↑: Accelerate",
+            "S/↓: Brake",
+            "A/D or ←/→: Turn",
+            "1/2/3: Change Vehicle",
+            "SPACE: Restart (in game)",
+            "",
+            "CAMERA MODES:",
+            "C: Cycle through camera modes",
+            "V: Quick switch to Chase Cam",
+            "B: Quick switch to Drone Cam",
+            "",
+            "• Chase: Standard following camera",
+            "• Drone: High, wide, strategic view",
+            "• Cinematic: Smooth, movie-like",
+            "• Free: Balanced, versatile view",
+            "",
+            "OBJECTIVES:",
+            "• Reach the finish line",
+            "• Avoid obstacles",
+            "• Collect powerups",
+            "• Don't fall off the road!",
+            "",
+            "POWERUPS:",
+            "• Speed Boost: Increases speed",
+            "• Shield: Protects from collisions"
+        ]
+        
+        start_y = WINDOW_HEIGHT - 150
+        for i, instruction in enumerate(instructions):
+            if instruction.endswith(":"):
+                glColor3f(1.0, 0.8, 0.0)  # Yellow for headers
+            else:
+                glColor3f(0.8, 0.8, 0.8)  # Gray for content
+            
+            glRasterPos2f(100, start_y - i * 25)
+            for char in instruction:
+                glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, ord(char))
+        
+        # Back option
+        glColor3f(0.8, 0.8, 0.8)
+        glRasterPos2f(WINDOW_WIDTH // 2 - 50, 50)
+        back_text = "Press ESC to go back"
+        for char in back_text:
+            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, ord(char))
+    
+    elif menu_page == "high_scores":
+        # High scores page
+        glColor3f(1.0, 1.0, 0.0)
+        glRasterPos2f(WINDOW_WIDTH // 2 - 120, WINDOW_HEIGHT - 100)
+        title = "🏆 HIGH SCORES 🏆"
+        for char in title:
+            glutBitmapCharacter(GLUT_BITMAP_TIMES_ROMAN_24, ord(char))
+        
+        # High scores list
+        if not high_scores:
+            glColor3f(0.8, 0.8, 0.8)
+            glRasterPos2f(WINDOW_WIDTH // 2 - 100, WINDOW_HEIGHT // 2)
+            no_scores_text = "No high scores yet!"
+            for char in no_scores_text:
+                glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
+            
+            glRasterPos2f(WINDOW_WIDTH // 2 - 150, WINDOW_HEIGHT // 2 - 40)
+            play_text = "Complete a race to set your first high score!"
+            for char in play_text:
+                glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, ord(char))
+        else:
+            # Display top 10 high scores
+            glColor3f(0.8, 0.8, 0.8)
+            glRasterPos2f(WINDOW_WIDTH // 2 - 200, WINDOW_HEIGHT - 150)
+            header_text = "Rank  Time     Vehicle  Date"
+            for char in header_text:
+                glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, ord(char))
+            
+            start_y = WINDOW_HEIGHT - 180
+            for i, (time_val, vehicle, date) in enumerate(high_scores[:10]):
+                # Highlight top 3 scores
+                if i < 3:
+                    if i == 0:
+                        glColor3f(1.0, 0.8, 0.0)  # Gold for 1st
+                    elif i == 1:
+                        glColor3f(0.8, 0.8, 0.8)  # Silver for 2nd
+                    else:
+                        glColor3f(0.8, 0.5, 0.2)  # Bronze for 3rd
+                else:
+                    glColor3f(0.6, 0.6, 0.6)  # Gray for others
+                
+                # Format the score line
+                rank = f"{i+1:2d}."
+                time_str = f"{time_val:6.2f}s"
+                vehicle_str = f"{vehicle:8s}"
+                date_str = date[:10]  # Just the date part
+                
+                score_text = f"{rank}  {time_str}  {vehicle_str}  {date_str}"
+                glRasterPos2f(WINDOW_WIDTH // 2 - 200, start_y - i * 25)
+                for char in score_text:
+                    glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, ord(char))
+        
+        # Back option
+        glColor3f(0.8, 0.8, 0.8)
+        glRasterPos2f(WINDOW_WIDTH // 2 - 50, 50)
+        back_text = "Press ESC to go back"
+        for char in back_text:
+            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, ord(char))
+    
+    # Restore 3D projection
+    glPopMatrix()
+    glMatrixMode(GL_PROJECTION)
+    glPopMatrix()
+    glMatrixMode(GL_MODELVIEW)
+    
+    # Re-enable depth testing and lighting
+    glEnable(GL_DEPTH_TEST)
+    glEnable(GL_LIGHTING)
+
 def display():
     """Main display function"""
     # Update clear color based on time
@@ -3100,9 +3498,12 @@ def display():
     draw_player_vehicle()
     
     # Draw UI elements
-    draw_road_map()
-    draw_hud()
-    draw_game_hud()
+    if game_state == "main_menu":
+        draw_main_menu()
+    else:
+        draw_road_map()
+        draw_hud()
+        draw_game_hud()
     
     update_environment()
     
@@ -3111,6 +3512,49 @@ def display():
 def keyboard(key, x, y):
     """Handle keyboard input"""
     global weather_mode, time_of_day, auto_time, use_fog, game_state, player_vehicle, lives, score, game_time
+    global menu_selection, menu_page, selected_vehicle, difficulty, camera_mode, camera_follow_vehicle
+    
+    # Handle main menu navigation
+    if game_state == "main_menu":
+        print(f"Menu key pressed: {key}, selection: {menu_selection}, page: {menu_page}")  # Debug
+        if key == b'\r' or key == b'\n' or key == b' ':  # Enter key or Space
+            print(f"Enter/Space pressed, selection: {menu_selection}")  # Debug
+            if menu_page == "main":
+                if menu_selection == 0:  # Play Game
+                    game_state = "playing"
+                    player_vehicle = Vehicle(selected_vehicle)
+                    print(f"Starting game with {selected_vehicle}!")
+                    print("Game started successfully!")
+                elif menu_selection == 1:  # Settings
+                    menu_page = "settings"
+                    menu_selection = 0  # Reset selection for settings
+                    print("Entered settings page")
+                elif menu_selection == 2:  # Instructions
+                    menu_page = "instructions"
+                    print("Entered instructions page")
+                elif menu_selection == 3:  # High Scores
+                    menu_page = "high_scores"
+                    print("Entered high scores page")
+                elif menu_selection == 4:  # Exit
+                    print("Thanks for playing!")
+                    print("Exiting game...")  # Debug
+                    import os
+                    os._exit(0)  # Force exit
+        elif key == b'\x1b':  # Escape key
+            if menu_page == "main":
+                print("Thanks for playing!")
+                import os
+                os._exit(0)  # Force exit
+            else:
+                menu_page = "main"
+                menu_selection = 0
+        elif key == b'1' and menu_page == "settings":
+            selected_vehicle = "cycle"
+        elif key == b'2' and menu_page == "settings":
+            selected_vehicle = "bike"
+        elif key == b'3' and menu_page == "settings":
+            selected_vehicle = "car"
+        return  # Don't process other keys when in menu
     
     if key == b'1':  # Change to cycle
         if game_state == "playing":
@@ -3124,18 +3568,21 @@ def keyboard(key, x, y):
         if game_state == "playing":
             player_vehicle = Vehicle("car")
             print("Switched to Car - High speed, slower turning")
-    elif key == b' ':  # Space bar - restart game
+    elif key == b' ':  # Space bar - return to main menu
         if game_state == "game_over":
-            game_state = "playing"
+            game_state = "main_menu"
+            menu_selection = 0
+            menu_page = "main"
             lives = 3
             score = 0
             game_time = 0.0
             player_vehicle.reset_position()
             obstacles.clear()
             powerups.clear()
-            has_shield = False
+            shield_count = 0
             speed_boost_active = False
             speed_boost_timer = 0.0
+            speed_boost_stack_count = 0
             
             # Reset camera position
             global current_camera_x, current_camera_y, current_camera_z
@@ -3148,7 +3595,7 @@ def keyboard(key, x, y):
             boundary_hit_timer = 0.0
             boundary_hit_intensity = 0.0
             
-            print("Game restarted!")
+            print("Returned to main menu!")
     elif key == b'4':  # Dusk
         time_of_day = 0.75
         auto_time = False
@@ -3163,10 +3610,19 @@ def keyboard(key, x, y):
     elif key == b'f' or key == b'F':  # Toggle fog
         use_fog = not use_fog
         print(f"Fog: {'ON' if use_fog else 'OFF'}")
-    elif key == b'c' or key == b'C':  # Toggle camera follow
-        global camera_follow_vehicle
-        camera_follow_vehicle = not camera_follow_vehicle
-        print(f"Camera Follow: {'ON' if camera_follow_vehicle else 'OFF'}")
+    elif key == b'c' or key == b'C':  # Cycle camera modes
+        camera_mode = (camera_mode + 1) % len(camera_modes)
+        new_mode = camera_modes[camera_mode]
+        print(f"Camera Mode: {new_mode}")
+        
+        if game_state != "playing":
+            print("Note: Camera modes only affect gameplay, not menu view")
+    elif key == b'v' or key == b'V':  # Quick switch to Chase Cam
+        camera_mode = 0  # Chase mode
+        print("Quick switch to Chase Cam")
+    elif key == b'b' or key == b'B':  # Quick switch to Drone Cam
+        camera_mode = 1  # Drone mode
+        print("Quick switch to Drone Cam")
     elif key == b'\x1b':  # ESC
         sys.exit(0)
     
@@ -3182,25 +3638,35 @@ def keyboard_up(key, x, y):
 
 def special_keys(key, x, y):
     """Handle special keys (from template)"""
-    global camera_pos, camera_look, camera_angle
+    global camera_pos, camera_look, camera_angle, game_state, menu_selection, menu_page, selected_vehicle
+    global current_camera_x, current_camera_y, current_camera_z
     
-    if key == GLUT_KEY_UP:
-        camera_pos[1] += 2
-    elif key == GLUT_KEY_DOWN:
-        camera_pos[1] -= 2
-    elif key == GLUT_KEY_LEFT:
-        camera_angle -= 5
-        # Rotate camera around center
-        radius = math.sqrt(camera_pos[0]**2 + camera_pos[2]**2)
-        if radius > 0:
-            camera_pos[0] = radius * math.sin(math.radians(camera_angle))
-            camera_pos[2] = radius * math.cos(math.radians(camera_angle))
-    elif key == GLUT_KEY_RIGHT:
-        camera_angle += 5
-        radius = math.sqrt(camera_pos[0]**2 + camera_pos[2]**2)
-        if radius > 0:
-            camera_pos[0] = radius * math.sin(math.radians(camera_angle))
-            camera_pos[2] = radius * math.cos(math.radians(camera_angle))
+    # Handle menu navigation
+    if game_state == "main_menu":
+        if menu_page == "main":
+            if key == GLUT_KEY_UP:
+                menu_selection = (menu_selection - 1) % 5
+            elif key == GLUT_KEY_DOWN:
+                menu_selection = (menu_selection + 1) % 5
+        elif menu_page == "settings":
+            if key == GLUT_KEY_UP:
+                # Cycle through vehicle types: car -> bike -> cycle -> car
+                if selected_vehicle == "car":
+                    selected_vehicle = "bike"
+                elif selected_vehicle == "bike":
+                    selected_vehicle = "cycle"
+                elif selected_vehicle == "cycle":
+                    selected_vehicle = "car"
+            elif key == GLUT_KEY_DOWN:
+                # Cycle through vehicle types: car -> cycle -> bike -> car
+                if selected_vehicle == "car":
+                    selected_vehicle = "cycle"
+                elif selected_vehicle == "cycle":
+                    selected_vehicle = "bike"
+                elif selected_vehicle == "bike":
+                    selected_vehicle = "car"
+        return  # Don't process camera controls when in menu
+    
     
     # Store special key press for vehicle movement
     keys_pressed[key] = True
@@ -3222,6 +3688,9 @@ def main():
     glutInitWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT)
     glutInitWindowPosition(100, 100)
     glutCreateWindow(b"3D Racing Game - Complete Edition")
+    
+    # Load high scores
+    load_high_scores()
     
     init_scene()
     
@@ -3257,8 +3726,9 @@ def main():
     print("  R: Cycle Weather")
     print("  T: Toggle Auto Time")
     print("  F: Toggle Fog")
-    print("  Arrow Keys: Camera movement (when not following)")
-    print("  C: Toggle camera follow mode")
+    print("  C: Cycle camera modes (Chase/Drone/Cinematic/Free)")
+    print("  V: Quick switch to Chase Cam")
+    print("  B: Quick switch to Drone Cam")
     print("\nGAME OBJECTIVES:")
     print("  - Reach the finish line without losing all lives")
     print("  - Avoid obstacles (use shield powerup for protection)")
