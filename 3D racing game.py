@@ -3513,6 +3513,8 @@ def keyboard(key, x, y):
     """Handle keyboard input"""
     global weather_mode, time_of_day, auto_time, use_fog, game_state, player_vehicle, lives, score, game_time
     global menu_selection, menu_page, selected_vehicle, difficulty, camera_mode, camera_follow_vehicle
+    global obstacles, powerups, shield_count, speed_boost_active, speed_boost_timer, speed_boost_stack_count
+    global current_camera_x, current_camera_y, current_camera_z, boundary_hit_timer, boundary_hit_intensity
     
     # Handle main menu navigation
     if game_state == "main_menu":
@@ -3523,6 +3525,25 @@ def keyboard(key, x, y):
                 if menu_selection == 0:  # Play Game
                     game_state = "playing"
                     player_vehicle = Vehicle(selected_vehicle)
+                    
+                    # Reset all game state for new game
+                    lives = 3
+                    score = 0
+                    game_time = 0.0
+                    obstacles.clear()
+                    powerups.clear()
+                    shield_count = 0
+                    speed_boost_active = False
+                    speed_boost_timer = 0.0
+                    speed_boost_stack_count = 0
+                    
+                    # Reset camera position
+                    camera_mode = 0
+                    
+                    # Reset boundary feedback
+                    boundary_hit_timer = 0.0
+                    boundary_hit_intensity = 0.0
+                    
                     print(f"Starting game with {selected_vehicle}!")
                     print("Game started successfully!")
                 elif menu_selection == 1:  # Settings
@@ -3568,7 +3589,7 @@ def keyboard(key, x, y):
         if game_state == "playing":
             player_vehicle = Vehicle("car")
             print("Switched to Car - High speed, slower turning")
-    elif key == b' ':  # Space bar - return to main menu
+    elif key == b' ':  # Space bar - restart game or return to main menu
         if game_state == "game_over":
             game_state = "main_menu"
             menu_selection = 0
@@ -3585,17 +3606,41 @@ def keyboard(key, x, y):
             speed_boost_stack_count = 0
             
             # Reset camera position
-            global current_camera_x, current_camera_y, current_camera_z
             current_camera_x = 0.0
             current_camera_y = 30.0
             current_camera_z = 60.0
             
             # Reset boundary feedback
-            global boundary_hit_timer, boundary_hit_intensity
             boundary_hit_timer = 0.0
             boundary_hit_intensity = 0.0
             
             print("Returned to main menu!")
+        elif game_state == "playing":
+            # Restart game during gameplay
+            game_state = "main_menu"
+            menu_selection = 0
+            menu_page = "main"
+            lives = 3
+            score = 0
+            game_time = 0.0
+            player_vehicle.reset_position()
+            obstacles.clear()
+            powerups.clear()
+            shield_count = 0
+            speed_boost_active = False
+            speed_boost_timer = 0.0
+            speed_boost_stack_count = 0
+            
+            # Reset camera position
+            current_camera_x = 0.0
+            current_camera_y = 30.0
+            current_camera_z = 60.0
+            
+            # Reset boundary feedback
+            boundary_hit_timer = 0.0
+            boundary_hit_intensity = 0.0
+            
+            print("Game restarted during gameplay - returned to main menu!")
     elif key == b'4':  # Dusk
         time_of_day = 0.75
         auto_time = False
@@ -3624,7 +3669,15 @@ def keyboard(key, x, y):
         camera_mode = 1  # Drone mode
         print("Quick switch to Drone Cam")
     elif key == b'\x1b':  # ESC
-        sys.exit(0)
+        if game_state == "playing":
+            # Return to main menu during gameplay
+            game_state = "main_menu"
+            menu_selection = 0
+            menu_page = "main"
+            print("Returned to main menu")
+        else:
+            # Exit game from menu
+            sys.exit(0)
     
     # Store key press for vehicle movement
     keys_pressed[key] = True
