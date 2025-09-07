@@ -707,7 +707,7 @@ def spawn_objects():
 
     
     # Spawn obstacles periodically
-    if len(obstacles) < 8 and random.random() < 0.02:
+    if len(obstacles) < 8 and random.random() < 0.04:
         # Ensure obstacles spawn well within road boundaries with margin for their size
         margin = 5.0  # Increased from 4.0 to ensure objects are clearly within visible track
         spawn_min_x = -ROAD_WIDTH/2 + margin
@@ -3794,3 +3794,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
